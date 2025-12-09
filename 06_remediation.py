@@ -69,15 +69,17 @@ def create_workspace_client(workspace_url: str) -> WorkspaceClient:
     azure_client_id = dbutils.secrets.get(scope=kv_scope, key=kv_client_id_key)
     client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
     tenant_id = dbutils.secrets.get(scope=kv_scope, key=kv_tenant_id_key)
-    
-    # return WorkspaceClient(
-    #     host=workspace_url,
-    #     azure_client_id=azure_client_id,
-    #     azure_client_secret=client_secret,
-    #     azure_tenant_id=tenant_id,
-    #     auth_type="azure-client-secret"
-    # )
-    return WorkspaceClient()
+    if kv_scope:
+        return WorkspaceClient(
+            host=workspace_url,
+            azure_client_id=azure_client_id,
+            azure_client_secret=client_secret,
+            azure_tenant_id=tenant_id,
+            auth_type="azure-client-secret"
+        )
+    else:
+        return WorkspaceClient()
+
 
 # COMMAND ----------
 
@@ -276,24 +278,27 @@ def delete_query(client, query_id: str) -> Tuple[bool, Optional[str]]:
 def delete_uc_catalog(client, catalog_name: str) -> Tuple[bool, Optional[str]]:
     """Delete a Unity Catalog catalog."""
     try:
-        client.catalogs.delete(catalog_name, force=True)
-        return (True, None)
+        # client.catalogs.delete(catalog_name, force=True)
+        # return (True, None)
+        raise Exception(f"Catalog deletion not supported. Catalog: {catalog_name}")
     except Exception as e:
         return (False, str(e))
 
 def delete_uc_schema(client, full_name: str) -> Tuple[bool, Optional[str]]:
     """Delete a Unity Catalog schema."""
     try:
-        client.schemas.delete(full_name)
-        return (True, None)
+        # client.schemas.delete(full_name)
+        # return (True, None)
+        raise Exception(f"Schema deletion not supported. Schema: {full_name}")
     except Exception as e:
         return (False, str(e))
 
 def delete_uc_table(client, full_name: str) -> Tuple[bool, Optional[str]]:
     """Delete a Unity Catalog table."""
     try:
-        client.tables.delete(full_name)
-        return (True, None)
+        # client.tables.delete(full_name)
+        # return (True, None)
+        raise Exception(f"Table deletion not supported. Table: {full_name}")
     except Exception as e:
         return (False, str(e))
 
@@ -384,16 +389,18 @@ def delete_feature_table(client, table_name: str) -> Tuple[bool, Optional[str]]:
 def delete_external_location(client, name: str) -> Tuple[bool, Optional[str]]:
     """Delete a Unity Catalog external location."""
     try:
-        client.external_locations.delete(name)
-        return (True, None)
+        # client.external_locations.delete(name)
+        # return (True, None)
+        raise Exception(f"External location deletion not supported. External location: {name}")
     except Exception as e:
         return (False, str(e))
 
 def delete_storage_credential(client, name: str) -> Tuple[bool, Optional[str]]:
     """Delete a Unity Catalog storage credential."""
     try:
-        client.storage_credentials.delete(name)
-        return (True, None)
+        # client.storage_credentials.delete(name)
+        # return (True, None)
+        raise Exception(f"Storage credential deletion not supported. Storage credential: {name}")
     except Exception as e:
         return (False, str(e))
 
@@ -432,8 +439,9 @@ def delete_clean_room(client, name: str) -> Tuple[bool, Optional[str]]:
 def delete_metastore(client, metastore_id: str) -> Tuple[bool, Optional[str]]:
     """Delete a Unity Catalog metastore."""
     try:
-        client.metastores.delete(metastore_id, force=True)
-        return (True, None)
+        # client.metastores.delete(metastore_id, force=True)
+        # return (True, None)
+        raise Exception(f"Metastore deletion not supported. Metastore: {metastore_id}")
     except Exception as e:
         return (False, str(e))
 
