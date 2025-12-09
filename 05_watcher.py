@@ -17,9 +17,9 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "governance", "Catalog Name")
+dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 dbutils.widgets.text("schema", "governance", "Schema Name")
-dbutils.widgets.text("lookback_hours", "24", "Lookback Hours for Audit Logs")
+dbutils.widgets.text("lookback_hours", "4000", "Lookback Hours for Audit Logs")
 
 # COMMAND ----------
 
@@ -109,7 +109,7 @@ print(f"  - Delete filters: {len(delete_filters)}")
 
 # MAGIC %md
 # MAGIC ## Load and Expand Pre-Approved Identities
-# MAGIC 
+# MAGIC
 # MAGIC Identities are loaded with granular permission flags:
 # MAGIC - **can_manage_resources**: Allowed to create/delete resources
 # MAGIC - **can_manage_permissions**: Allowed to grant/revoke permissions

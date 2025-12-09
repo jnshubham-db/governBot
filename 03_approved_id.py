@@ -12,7 +12,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "governance", "Catalog Name")
+dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 dbutils.widgets.text("schema", "governance", "Schema Name")
 
 # COMMAND ----------
@@ -48,21 +48,7 @@ print(f"Schema: {schema}")
 approved_identities = [
     # Users (email addresses)
     # Admin can do both - manage resources AND manage permissions
-    {"name": "admin@example.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": True},
-    # Data engineer can only manage resources, not permissions
-    {"name": "dataengineer@example.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": False},
-    
-    # Service Principals
-    # Governance SP can do both
-    {"name": "governance-sp", "type": "SERVICE_PRINCIPAL", "can_manage_resources": True, "can_manage_permissions": True},
-    
-    # Groups
-    # Data engineers group can manage resources only
-    {"name": "data-engineers", "type": "GROUP", "can_manage_resources": True, "can_manage_permissions": False},
-    # Admins group can do both
-    {"name": "admins", "type": "GROUP", "can_manage_resources": True, "can_manage_permissions": True},
-    
-    # Add more identities here
+    {"name": "sashank.kotta@databricks.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": True},
 ]
 
 print(f"Number of approved identities: {len(approved_identities)}")

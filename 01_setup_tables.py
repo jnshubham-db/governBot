@@ -12,9 +12,9 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "governance", "Catalog Name")
+dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 dbutils.widgets.text("schema", "governance", "Schema Name")
-dbutils.widgets.dropdown("drop_existing", "false", ["true", "false"], "Drop Existing Tables")
+dbutils.widgets.dropdown("drop_existing", "true", ["true", "false"], "Drop Existing Tables")
 
 # COMMAND ----------
 

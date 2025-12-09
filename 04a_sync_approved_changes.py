@@ -20,7 +20,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "governance", "Catalog Name")
+dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 dbutils.widgets.text("schema", "governance", "Schema Name")
 dbutils.widgets.text("lookback_hours", "24", "Lookback Hours for Audit Logs")
 dbutils.widgets.dropdown("sync_creations", "Y", ["Y", "N"], "Sync New Creations")

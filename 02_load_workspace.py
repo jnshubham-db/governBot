@@ -12,7 +12,7 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "governance", "Catalog Name")
+dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 dbutils.widgets.text("schema", "governance", "Schema Name")
 
 # COMMAND ----------
@@ -35,9 +35,9 @@ print(f"Schema: {schema}")
 # **UPDATE THIS LIST WITH YOUR WORKSPACE CONFIGURATIONS**
 workspace_configs = [
     {
-        'workspace_id': '1234567890123456',
+        'workspace_id': '3592773542550038',
         'workspace_name': 'Production Workspace',
-        'workspace_url': 'https://your-workspace.cloud.databricks.com',
+        'workspace_url': 'https://adb-3592773542550038.18.azuredatabricks.net/',
         'enforcement_enabled': True,
         'notification_email': 'admin@example.com',
         'notification_slack_webhook': None,  # Optional: add Slack webhook URL

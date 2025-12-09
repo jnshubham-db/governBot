@@ -14,9 +14,9 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "governance", "Catalog Name")
+dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 dbutils.widgets.text("schema", "governance", "Schema Name")
-dbutils.widgets.dropdown("dry_run", "false", ["true", "false"], "Dry Run Mode")
+dbutils.widgets.dropdown("dry_run", "true", ["true", "false"], "Dry Run Mode")
 # Azure Key Vault parameters for cross-workspace authentication
 dbutils.widgets.text("kv_scope", "", "Key Vault Scope Name")
 dbutils.widgets.text("kv_client_id_key", "AzureClientId", "Key Vault Key for Client ID")
@@ -70,13 +70,14 @@ def create_workspace_client(workspace_url: str) -> WorkspaceClient:
     client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
     tenant_id = dbutils.secrets.get(scope=kv_scope, key=kv_tenant_id_key)
     
-    return WorkspaceClient(
-        host=workspace_url,
-        azure_client_id=azure_client_id,
-        azure_client_secret=client_secret,
-        azure_tenant_id=tenant_id,
-        auth_type="azure-client-secret"
-    )
+    # return WorkspaceClient(
+    #     host=workspace_url,
+    #     azure_client_id=azure_client_id,
+    #     azure_client_secret=client_secret,
+    #     azure_tenant_id=tenant_id,
+    #     auth_type="azure-client-secret"
+    # )
+    return WorkspaceClient()
 
 # COMMAND ----------
 

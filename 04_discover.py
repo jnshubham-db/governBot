@@ -12,11 +12,11 @@
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "governance", "Catalog Name")
+dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 dbutils.widgets.text("schema", "governance", "Schema Name")
-dbutils.widgets.text("workspace_id", "", "Workspace ID (required)")
-dbutils.widgets.text("workspace_url", "", "Workspace URL (required)")
-dbutils.widgets.multiselect("object_types", "workspace_objects,query,dashboard,jobs,pipelines,apps,mlflowExperiments,monitors", 
+dbutils.widgets.text("workspace_id", "3592773542550038", "Workspace ID (required)")
+dbutils.widgets.text("workspace_url", "https://adb-3592773542550038.18.azuredatabricks.net/", "Workspace URL (required)")
+dbutils.widgets.multiselect("object_types", "workspace_objects", 
                            ["workspace_objects", "query", "dashboard", "jobs", "cluster", "pipelines", "apps", 
                             "mlflowExperiments", "monitors", "alerts", "warehouses", "clusterPolicies", 
                             "instancePools", "servingEndpoints", "registeredModels", "secretScopes",
