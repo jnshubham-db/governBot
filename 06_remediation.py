@@ -109,7 +109,6 @@ pending_violations_df = spark.sql(f"""
     FROM {staging_table}
     WHERE processing_status IN ('PENDING', 'PENDING_REPORT')
     ORDER BY event_time ASC
-    LIMIT 100
 """)
 
 pending_count = pending_violations_df.count()
@@ -789,6 +788,7 @@ def get_resource_definition(client, object_type: str, object_id: str) -> Optiona
 
 # COMMAND ----------
 
+
 def revert_permissions(client, workspace_id: str, object_id: str, object_type: str) -> Tuple[bool, Optional[str]]:
     """
     Revert object permissions:
@@ -1434,4 +1434,13 @@ dbutils.notebook.exit(json.dumps({
     'failed_count': failed_count,
     'timestamp': datetime.utcnow().isoformat()
 }))
+
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC select * from sjdatabricks.governance.governance_control_actions
+
+# COMMAND ----------
+
 

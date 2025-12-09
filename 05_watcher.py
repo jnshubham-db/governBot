@@ -438,6 +438,7 @@ if create_query:
     
     create_events_count = create_events_parsed_df.count()
     print(f"Found {create_events_count} create events by unauthorized identities")
+    create_events_parsed_df.display()
 else:
     create_events_parsed_df = None
     create_events_count = 0
@@ -783,3 +784,34 @@ dbutils.notebook.exit(json.dumps({
     'delete_violations': delete_violations,
     'timestamp': datetime.utcnow().isoformat()
 }))
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- create table sjdatabricks.governance.governance_preapproved_objects_bkp2 as select * from sjdatabricks.governance.governance_preapproved_objects
+# MAGIC select s.*, a.request_params, a.response, a.user_identity from sjdatabricks.governance.governance_violations_staging s left join system.access.audit a on s.event_id = a.event_id 
+# MAGIC --1082376942873335
+# MAGIC --41fa5fb6-bd87-4196-bd3c-98a17470a329
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Doubts
+# MAGIC - Cluster ACLs for serverless, how can we identify and ignore those.
+# MAGIC - Cluster creation for job cluster needs to be excluded, cannot find any direct way.
+# MAGIC - Cluster of serverless created also sends an audit log.
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC DELETE FROM sjdatabricks.governance.governance_violations_staging WHERE action_name IN ('createTable', 'createCatalog', 'createSchema')
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- truncate table sjdatabricks.governance.governance_violations_staging
+# MAGIC -- select * from
+
+# COMMAND ----------
+
+
