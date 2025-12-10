@@ -1209,7 +1209,7 @@ def execute_remediation(client, violation: dict, dry_run: bool = False) -> Tuple
                 details = f"Failed to revert permissions for {object_type}: {object_name}"
                 print(f"✗ {details} - {error}")
         
-        elif remediation_action == 'REPORT_DELETION':
+        elif remediation_action == 'REPORT_DELETION' or remediation_action == 'REPORT_SECURITY_TEAM':
             # Report deletion to security team - no automated action needed
             # This is logged in control_actions table for security team review
             print(f"📋 Logging deletion event for security team review:")
