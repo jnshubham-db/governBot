@@ -19,7 +19,7 @@
 
 dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 dbutils.widgets.text("schema", "governance", "Schema Name")
-dbutils.widgets.text("lookback_hours", "4000", "Lookback Hours for Audit Logs")
+dbutils.widgets.text("lookback_hours", "200", "Lookback Hours for Audit Logs")
 
 # COMMAND ----------
 
@@ -357,8 +357,8 @@ def build_audit_query_from_filters(
             object_type_cases.append(f"WHEN {condition} THEN '{object_type_str}'")
         
         remediation_cases.append(f"WHEN {condition} THEN '{f.remediation_action}'")
-        if(f.service_name == 'clusters' and f.action_name == 'create'):
-            condition = f"""({condition} AND
+        if(f.service_name == 'clusters' and f.action_name in ('create', 'createResult')):
+            condition = f"""({condition}) AND
              NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
              AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
             AND NOT (
@@ -372,15 +372,15 @@ def build_audit_query_from_filters(
             AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
             )"""
         elif(f.service_name == 'clusters' and f.action_name == 'changeClusterAcl'):
-            condition = f"""({condition} AND request_params.resourceId in 
+            condition = f"""({condition}) AND request_params.resourceId in 
                     (select distinct cluster_id from system.compute.clusters where cluster_source IN ('API','UI') 
                     and workspace_id IN ('{workspace_ids_str}'))
-            )"""
+            """
         elif(f.service_name == 'jobs' and f.action_name == 'changeJobAcl'):
-            condition = f"""({condition} AND
+            condition = f"""({condition})
             --Exclusión por asignación de Owner desde DataFactory
             AND NOT (NVL(request_params.aclPermissionSet,'x') ='Owner' AND NVL(USER_AGENT,'x')='AzureDataFactory')
-            )"""
+            """
         else:
             condition = f"({condition})"
 
@@ -436,7 +436,7 @@ def build_audit_query_from_filters(
         AND {identity_filter}{personal_workspace_exclusion}
     ORDER BY event_time DESC
     """
-    
+    print(query)
     return query
 
 # COMMAND ----------
