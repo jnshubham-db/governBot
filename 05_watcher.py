@@ -357,6 +357,33 @@ def build_audit_query_from_filters(
             object_type_cases.append(f"WHEN {condition} THEN '{object_type_str}'")
         
         remediation_cases.append(f"WHEN {condition} THEN '{f.remediation_action}'")
+        if(f.service_name == 'clusters' and f.action_name == 'create'):
+            condition = f"""({condition} AND
+             NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
+             AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
+            AND NOT (
+                request_params.kind='SERVERLESS_SQL_WAREHOUSE' AND request_params.cluster_creator='SQL_SERVICE'
+                    OR request_params.kind='SERVERLESS_PREVIEW' AND request_params.cluster_creator='COMPUTE_GATEWAY_LAUNCHER'
+                    OR request_params.kind='SERVERLESS_REPL_VM' AND request_params.cluster_creator='REPL_LAUNCHER'
+            )"""
+        elif(f.service_name == 'clusters' and f.action_name == 'delete'):
+            condition = f"""({condition} AND
+            NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
+            AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
+            )"""
+        elif(f.service_name == 'clusters' and f.action_name == 'changeClusterAcl'):
+            condition = f"""({condition} AND request_params.resourceId in 
+                    (select distinct cluster_id from system.compute.clusters where cluster_source IN ('API','UI') 
+                    and workspace_id IN ('{workspace_ids_str}'))
+            )"""
+        elif(f.service_name == 'jobs' and f.action_name == 'changeJobAcl'):
+            condition = f"""({condition} AND
+            --Exclusión por asignación de Owner desde DataFactory
+            AND NOT (NVL(request_params.aclPermissionSet,'x') ='Owner' AND NVL(USER_AGENT,'x')='AzureDataFactory')
+            )"""
+        else:
+            condition = f"({condition})"
+
         action_conditions.append(f"({condition})")
     
     # Build CASE SQL
@@ -383,45 +410,6 @@ def build_audit_query_from_filters(
             AND request_params.path LIKE '/Workspace/Users/%'
         )"""
     
-
-    extra_filters = ""
-    if is_permission_change:
-        extra_filters = f"""
-        (
-        service_name = 'clusters' and action_name = 'changeClusterAcl' 
-        and request_params.resourceId in 
-        (select distinct cluster_id from system.compute.clusters where cluster_source IN ('API','UI') 
-        and workspace_id IN ('{workspace_ids_str}'))
-        )
-        OR 
-        (
-        service_name = 'jobs' and action_name = 'changeJobAcl'
-        --Exclusión por asignación de Owner desde DataFactory
-        AND NOT (NVL(request_params.aclPermissionSet,'x') ='Owner' AND NVL(USER_AGENT,'x')='AzureDataFactory')
-        )
-        """
-    if is_delete_event:
-        extra_filters = f"""
-        (
-        service_name = 'clusters' and action_name in ('delete')
-        AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
-        AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
-        )
-        """
-    else:
-        extra_filters = f"""
-        (
-            service_name = 'clusters' and action_name in ('create')
-            AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
-            AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
-            AND NOT (
-                request_params.kind='SERVERLESS_SQL_WAREHOUSE' AND request_params.cluster_creator='SQL_SERVICE'
-                    OR request_params.kind='SERVERLESS_PREVIEW' AND request_params.cluster_creator='COMPUTE_GATEWAY_LAUNCHER'
-                    OR request_params.kind='SERVERLESS_REPL_VM' AND request_params.cluster_creator='REPL_LAUNCHER'
-            )
-        )
-        
-        """
     
     query = f"""
     SELECT
@@ -446,7 +434,6 @@ def build_audit_query_from_filters(
         AND user_identity.email IS NOT NULL
         AND ({action_filter_sql})
         AND {identity_filter}{personal_workspace_exclusion}
-        AND {extra_filters}
     ORDER BY event_time DESC
     """
     
