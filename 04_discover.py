@@ -604,144 +604,98 @@ def discover_queries(client, workspace_id: str) -> List[Dict[str, Any]]:
 # COMMAND ----------
 
 def discover_dashboards(client, workspace_id: str) -> List[Dict[str, Any]]:
-    """Discover all dashboards (both AI/BI and legacy DBSQL dashboards)."""
+    """Discover all dashboards (both Lakeview/AI-BI and legacy SQL dashboards)."""
     print("Discovering dashboards...")
     discovered = []
     
-    # Discover AI/BI dashboards using client.dashboards.list()
-    # These use "dashboards" permission type with resource_id
+    # Discover Lakeview (AI/BI) dashboards
     try:
-        aibi_count = 0
-        for dashboard in client.dashboards.list():
-            # AI/BI dashboards identify by resource_id
-            dashboard_id = getattr(dashboard, 'resource_id', None) or getattr(dashboard, 'id', None)
-            if not dashboard_id:
-                continue
-            
+        lakeview_count = 0
+        for dashboard in client.lakeview.list():
             # Extract owner from dashboard metadata
             owner_email = 'unknown'
             if hasattr(dashboard, 'creator_user_name') and dashboard.creator_user_name:
                 owner_email = dashboard.creator_user_name
             
-            # Get permissions using "dashboards" permission type and resource_id
+            # Lakeview dashboards use "dashboards" permission type with dashboard_id
+            # Try to get permissions using the dashboard_id
             permissions = []
-            try:
-                acl = client.permissions.get(
-                    request_object_type="dashboards",
-                    request_object_id=dashboard_id
-                )
-                if acl and acl.access_control_list:
-                    for ace in acl.access_control_list:
-                        principal_email = ace.user_name or ace.service_principal_name or ace.group_name
-                        principal_type = 'user'
-                        if ace.user_name:
-                            principal_type = 'user'
-                        elif ace.service_principal_name:
-                            principal_type = 'service_principal'
-                        elif ace.group_name:
-                            principal_type = 'group'
-                        
-                        if principal_email and ace.all_permissions:
-                            for perm in ace.all_permissions:
-                                perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
-                                if perm_level == 'CAN_MANAGE' and not perm.inherited:
-                                    owner_email = principal_email
-                                permissions.append(Row(
-                                    principal_email=principal_email,
-                                    principal_type=principal_type,
-                                    permission_level=perm_level
-                                ))
-            except Exception as perm_err:
-                print(f"  ⚠️  Permission fetch failed for dashboards/{dashboard_id}: {str(perm_err)}")
+            dashboard_id = dashboard.dashboard_id
+            dashboard_path = dashboard.path if hasattr(dashboard, 'path') else None
             
-            dashboard_name = getattr(dashboard, 'display_name', None) or getattr(dashboard, 'name', None) or 'Untitled Dashboard'
-            dashboard_path = getattr(dashboard, 'path', None)
+            # Try getting permissions using the dashboards permission type
+            try:
+                owner_from_perms, permissions = get_permissions_safe(client, "dashboards", dashboard_id)
+                if owner_email == 'unknown' and owner_from_perms != 'unknown':
+                    owner_email = owner_from_perms
+            except Exception:
+                pass
+            
+            # If no permissions found and we have a path, try getting workspace object permissions
+            if not permissions and dashboard_path:
+                try:
+                    # Get the workspace object ID for this path
+                    ws_obj = client.workspace.get_status(dashboard_path)
+                    if ws_obj and ws_obj.object_id:
+                        owner_from_perms, permissions = get_permissions_safe(client, "directories", str(ws_obj.object_id))
+                        if owner_email == 'unknown' and owner_from_perms != 'unknown':
+                            owner_email = owner_from_perms
+                except Exception:
+                    pass
             
             discovered.append({
                 'object_id': dashboard_id,
                 'workspace_id': workspace_id,
                 'object_type': 'lakeview_dashboard',
-                'object_name': dashboard_name,
+                'object_name': dashboard.display_name or 'Untitled Dashboard',
                 'object_path': dashboard_path,
                 'owner_email': owner_email,
                 'permissions': permissions,
                 'metadata': {
                     'lifecycle_state': dashboard.lifecycle_state.value if hasattr(dashboard, 'lifecycle_state') and dashboard.lifecycle_state else 'UNKNOWN',
-                    'create_time': str(getattr(dashboard, 'create_time', ''))
+                    'create_time': str(dashboard.create_time) if hasattr(dashboard, 'create_time') else ''
                 },
                 'is_active': True,
                 'created_at': datetime.utcnow(),
                 'updated_at': datetime.utcnow()
             })
-            aibi_count += 1
+            lakeview_count += 1
         
-        print(f"  ✓ Discovered {aibi_count} AI/BI dashboards")
-    except AttributeError as ae:
-        print(f"  ⚠ Dashboards API not available in SDK: {str(ae)}")
+        print(f"  ✓ Discovered {lakeview_count} Lakeview (AI/BI) dashboards")
+    except AttributeError:
+        print(f"  ⚠ Lakeview API not available in SDK - skipping Lakeview dashboards")
     except Exception as e:
-        print(f"  ⚠ Error discovering AI/BI dashboards: {str(e)}")
+        print(f"  ⚠ Error discovering Lakeview dashboards: {str(e)}")
     
-    # Discover legacy DBSQL dashboards using client.dbsql_dashboards.list()
-    # These use "dbsql-dashboards" permission type
+    # Discover legacy SQL dashboards using the legacy API
     try:
         legacy_count = 0
-        # Check if dbsql_dashboards API is available
-        if hasattr(client, 'dbsql_dashboards'):
-            for dashboard in client.dbsql_dashboards.list():
-                dashboard_id = dashboard.id
-                
-                # Get permissions using "dbsql-dashboards" permission type
-                permissions = []
-                owner_email = 'unknown'
-                try:
-                    acl = client.permissions.get(
-                        request_object_type="dbsql-dashboards",
-                        request_object_id=dashboard_id
-                    )
-                    if acl and acl.access_control_list:
-                        for ace in acl.access_control_list:
-                            principal_email = ace.user_name or ace.service_principal_name or ace.group_name
-                            principal_type = 'user'
-                            if ace.user_name:
-                                principal_type = 'user'
-                            elif ace.service_principal_name:
-                                principal_type = 'service_principal'
-                            elif ace.group_name:
-                                principal_type = 'group'
-                            
-                            if principal_email and ace.all_permissions:
-                                for perm in ace.all_permissions:
-                                    perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
-                                    if perm_level == 'CAN_MANAGE' and not perm.inherited:
-                                        owner_email = principal_email
-                                    permissions.append(Row(
-                                        principal_email=principal_email,
-                                        principal_type=principal_type,
-                                        permission_level=perm_level
-                                    ))
-                except Exception as perm_err:
-                    print(f"  ⚠️  Permission fetch failed for dbsql-dashboards/{dashboard_id}: {str(perm_err)}")
-                
-                discovered.append({
-                    'object_id': dashboard_id,
-                    'workspace_id': workspace_id,
-                    'object_type': 'dashboard',
-                    'object_name': getattr(dashboard, 'name', None) or 'Untitled Dashboard',
-                    'object_path': None,
-                    'owner_email': owner_email,
-                    'permissions': permissions,
-                    'metadata': {'created_at': str(getattr(dashboard, 'created_at', ''))},
-                    'is_active': True,
-                    'created_at': datetime.utcnow(),
-                    'updated_at': datetime.utcnow()
-                })
-                legacy_count += 1
+        # Legacy SQL dashboards use "dbsql-dashboards" for permissions API
+        for dashboard in client.dashboards.list():
+            # Use dbsql-dashboards for permission type (legacy SQL dashboards)
+            owner_email, permissions = get_permissions_safe(client, "dbsql-dashboards", dashboard.id)
+            # Prefer the owner from dashboard.user if available
+            if hasattr(dashboard, 'user') and dashboard.user and hasattr(dashboard.user, 'email'):
+                owner_email = dashboard.user.email
             
-            print(f"  ✓ Discovered {legacy_count} legacy DBSQL dashboards")
-        else:
-            print(f"  ⚠ dbsql_dashboards API not available in SDK - skipping legacy dashboards")
+            discovered.append({
+                'object_id': dashboard.id,
+                'workspace_id': workspace_id,
+                'object_type': 'dashboard',
+                'object_name': dashboard.name or 'Untitled Dashboard',
+                'object_path': None,
+                'owner_email': owner_email,
+                'permissions': permissions,
+                'metadata': {'created_at': str(dashboard.created_at) if hasattr(dashboard, 'created_at') else ''},
+                'is_active': True,
+                'created_at': datetime.utcnow(),
+                'updated_at': datetime.utcnow()
+            })
+            legacy_count += 1
+        
+        print(f"  ✓ Discovered {legacy_count} legacy SQL dashboards")
     except Exception as e:
-        print(f"  ⚠ Error discovering legacy DBSQL dashboards: {str(e)}")
+        print(f"  ⚠ Error discovering legacy SQL dashboards: {str(e)}")
     
     print(f"✓ Discovered {len(discovered)} total dashboards")
     return discovered
@@ -961,20 +915,16 @@ def discover_mlflow_experiments(client, workspace_id: str) -> List[Dict[str, Any
     discovered = []
     
     try:
-        # Use experiments.list() as per the SDK documentation
-        for experiment in client.experiments.list():
-            experiment_id = str(experiment.experiment_id)
-            experiment_name = experiment.name or ''
-            
-            # Get permissions using "experiments" object type
-            owner_email, permissions = get_permissions_safe(client, "experiments", experiment_id)
+        for experiment in client.experiments.list_experiments():
+            # Use "experiments" for permission type (the API expects "experiments", not "mlflow-experiments")
+            owner_email, permissions = get_permissions_safe(client, "experiments", experiment.experiment_id)
             
             discovered.append({
-                'object_id': experiment_id,
+                'object_id': experiment.experiment_id,
                 'workspace_id': workspace_id,
                 'object_type': 'mlflowExperiments',
-                'object_name': experiment_name or 'Unnamed Experiment',
-                'object_path': experiment_name if experiment_name.startswith('/') else None,
+                'object_name': experiment.name or 'Unnamed Experiment',
+                'object_path': None,
                 'owner_email': owner_email,  # Extracted from permissions
                 'permissions': permissions,
                 'metadata': {'artifact_location': experiment.artifact_location or ''},
@@ -1266,17 +1216,20 @@ def discover_serving_endpoints(client, workspace_id: str) -> List[Dict[str, Any]
                 # Skip foundation model endpoints, they don't have traditional permissions
                 continue
             
+            # Get endpoint ID for permissions API (not the name)
+            endpoint_id = endpoint.id
+            
             # Get owner first from endpoint metadata
             owner_email = 'unknown'
             if hasattr(endpoint, 'creator') and endpoint.creator:
                 owner_email = endpoint.creator
             
-            # Get permissions using SDK permissions API with "serving-endpoints" object type and endpoint.name
+            # Get permissions using SDK permissions API with "serving-endpoints" object type and endpoint.id
             permissions = []
             try:
                 acl = client.permissions.get(
                     request_object_type="serving-endpoints",
-                    request_object_id=endpoint_name
+                    request_object_id=endpoint_id
                 )
                 if acl and acl.access_control_list:
                     for ace in acl.access_control_list:
@@ -1300,7 +1253,7 @@ def discover_serving_endpoints(client, workspace_id: str) -> List[Dict[str, Any]
                                     permission_level=perm_level
                                 ))
             except Exception as perm_err:
-                print(f"  ⚠️  Permission fetch failed for serving-endpoints/{endpoint_name}: {str(perm_err)}")
+                print(f"  ⚠️  Permission fetch failed for serving-endpoints/{endpoint_id}: {str(perm_err)}")
             
             # Get state safely
             state_str = 'UNKNOWN'
@@ -1311,7 +1264,7 @@ def discover_serving_endpoints(client, workspace_id: str) -> List[Dict[str, Any]
                     state_str = endpoint.state.ready.value if hasattr(endpoint.state.ready, 'value') else str(endpoint.state.ready)
             
             discovered.append({
-                'object_id': endpoint_name,
+                'object_id': endpoint_id,  # Use endpoint ID
                 'workspace_id': workspace_id,
                 'object_type': 'servingEndpoint',
                 'object_name': endpoint_name,
@@ -1320,6 +1273,7 @@ def discover_serving_endpoints(client, workspace_id: str) -> List[Dict[str, Any]
                 'permissions': permissions,
                 'metadata': {
                     'state': state_str,
+                    'endpoint_name': endpoint_name,  # Store name in metadata
                     'creation_timestamp': str(endpoint.creation_timestamp) if hasattr(endpoint, 'creation_timestamp') else ''
                 },
                 'is_active': True,
@@ -1451,13 +1405,14 @@ def discover_vector_search_endpoints(client, workspace_id: str) -> List[Dict[str
         for endpoint in client.vector_search_endpoints.list_endpoints():
             owner_email = endpoint.creator if hasattr(endpoint, 'creator') and endpoint.creator else 'unknown'
             endpoint_name = endpoint.name
+            endpoint_id = endpoint.id  # Use endpoint ID for permissions API
             
-            # Get permissions using SDK permissions API with "vector-search-endpoints" object type
+            # Get permissions using SDK permissions API with "vector-search-endpoints" object type and endpoint.id
             permissions = []
             try:
                 acl = client.permissions.get(
                     request_object_type="vector-search-endpoints",
-                    request_object_id=endpoint_name
+                    request_object_id=endpoint_id
                 )
                 if acl and acl.access_control_list:
                     for ace in acl.access_control_list:
@@ -1481,10 +1436,10 @@ def discover_vector_search_endpoints(client, workspace_id: str) -> List[Dict[str
                                     permission_level=perm_level
                                 ))
             except Exception as perm_error:
-                print(f"  ⚠️  Permission fetch failed for vector-search-endpoints/{endpoint_name}: {str(perm_error)}")
+                print(f"  ⚠️  Permission fetch failed for vector-search-endpoints/{endpoint_id}: {str(perm_error)}")
             
             discovered.append({
-                'object_id': endpoint_name,
+                'object_id': endpoint_id,  # Use endpoint ID
                 'workspace_id': workspace_id,
                 'object_type': 'vectorSearchEndpoint',
                 'object_name': endpoint_name,
@@ -1492,6 +1447,7 @@ def discover_vector_search_endpoints(client, workspace_id: str) -> List[Dict[str
                 'owner_email': owner_email,
                 'permissions': permissions,
                 'metadata': {
+                    'endpoint_name': endpoint_name,  # Store name in metadata
                     'endpoint_type': endpoint.endpoint_type.value if hasattr(endpoint, 'endpoint_type') and endpoint.endpoint_type else 'UNKNOWN',
                     'endpoint_status': endpoint.endpoint_status.state.value if hasattr(endpoint, 'endpoint_status') and endpoint.endpoint_status else 'UNKNOWN'
                 },
