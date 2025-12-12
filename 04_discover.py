@@ -11,6 +11,12 @@
 # MAGIC ## Parameters
 
 # COMMAND ----------
+#MAGIC %pip install -U databricks-sdk
+
+# COMMAND ----------
+#MAGIC %restart_python
+
+# COMMAND ----------
 
 dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 dbutils.widgets.text("schema", "governance", "Schema Name")
