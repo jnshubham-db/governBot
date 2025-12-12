@@ -78,6 +78,37 @@ print("✓ Workspace client initialized")
 
 # COMMAND ----------
 
+import re
+
+def _detect_principal_type(principal: str) -> str:
+    """
+    Detect principal type based on the principal identifier.
+    
+    Rules:
+    - Users: contain '@' in email format (e.g., user@company.com)
+    - Service Principals: follow UUID/GUID pattern (e.g., d118594b-a1db-41b2-a6e2-a201377c2aec)
+    - Groups: everything else (e.g., "admins", "data_engineers", "users")
+    
+    Returns: 'user', 'service_principal', or 'group'
+    """
+    if not principal:
+        return 'user'
+    
+    # UUID/GUID pattern for service principals
+    # Format: 8-4-4-4-12 hexadecimal characters
+    uuid_pattern = r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    
+    if re.match(uuid_pattern, principal):
+        # Service principal (UUID format)
+        return 'service_principal'
+    elif '@' in principal:
+        # User (email format)
+        return 'user'
+    else:
+        # Group (e.g., "admins", "data_engineers")
+        return 'group'
+
+
 def get_permissions_safe(client, object_type: str, object_id: str, debug_sample: bool = False) -> tuple:
     """
     Get permissions for an object, returning (owner_email, permissions_list).
@@ -106,12 +137,21 @@ def get_permissions_safe(client, object_type: str, object_id: str, debug_sample:
                     # Also capture group permissions
                     principal_email = acl.group_name
                 
+                # Determine principal type for more accurate remediation
+                principal_type = 'user'
+                if acl.user_name:
+                    principal_type = 'user'
+                elif acl.service_principal_name:
+                    principal_type = 'service_principal'
+                elif acl.group_name:
+                    principal_type = 'group'
+                
                 if principal_email and acl.all_permissions:
                     for perm in acl.all_permissions:
                         # Debug: Show what we're seeing
                         if debug_sample:
                             inherited_str = "inherited" if perm.inherited else "direct"
-                            print(f"      - {principal_email}: {perm.permission_level.value} ({inherited_str})")
+                            print(f"      - {principal_email} ({principal_type}): {perm.permission_level.value} ({inherited_str})")
                         
                         # Check if this principal is the owner (has CAN_MANAGE, prefer non-inherited)
                         if perm.permission_level.value == 'CAN_MANAGE':
@@ -123,8 +163,10 @@ def get_permissions_safe(client, object_type: str, object_id: str, debug_sample:
                         
                         # Include ALL permissions (both inherited and direct)
                         # This matches the behavior of the original sample.py
+                        # Now also includes principal_type for more accurate remediation
                         acl_list.append(Row(
                             principal_email=principal_email,
+                            principal_type=principal_type,
                             permission_level=perm.permission_level.value
                         ))
         
@@ -185,6 +227,10 @@ def get_uc_grants_safe(client, securable_type: str, full_name: str) -> tuple:
             for assignment in grants.privilege_assignments:
                 principal = assignment.principal if hasattr(assignment, 'principal') else None
                 if principal and assignment.privileges:
+                    # Determine principal type based on naming conventions
+                    # UC grants don't explicitly tell us if it's user/group/sp
+                    principal_type = _detect_principal_type(principal)
+                    
                     for privilege in assignment.privileges:
                         priv_name = privilege.privilege.value if hasattr(privilege.privilege, 'value') else str(privilege.privilege)
                         
@@ -194,6 +240,7 @@ def get_uc_grants_safe(client, securable_type: str, full_name: str) -> tuple:
                         
                         acl_list.append(Row(
                             principal_email=principal,
+                            principal_type=principal_type,
                             permission_level=priv_name
                         ))
         
@@ -218,12 +265,16 @@ def get_secret_acls_safe(client, scope_name: str) -> tuple:
             permission = acl.permission.value if hasattr(acl, 'permission') and hasattr(acl.permission, 'value') else str(acl.permission)
             
             if principal:
+                # Determine principal type
+                principal_type = _detect_principal_type(principal)
+                
                 # MANAGE permission indicates owner
                 if permission == 'MANAGE':
                     owner_email = principal
                 
                 acl_list.append(Row(
                     principal_email=principal,
+                    principal_type=principal_type,
                     permission_level=permission
                 ))
         
@@ -535,15 +586,53 @@ def discover_queries(client, workspace_id: str) -> List[Dict[str, Any]]:
 # COMMAND ----------
 
 def discover_dashboards(client, workspace_id: str) -> List[Dict[str, Any]]:
-    """Discover all dashboards."""
+    """Discover all dashboards (both Lakeview/AI-BI and legacy SQL dashboards)."""
     print("Discovering dashboards...")
     discovered = []
     
+    # Discover Lakeview (AI/BI) dashboards
     try:
+        lakeview_count = 0
+        for dashboard in client.lakeview.list():
+            # Lakeview dashboards don't support standard permissions API
+            # Extract owner from dashboard metadata
+            owner_email = 'unknown'
+            if hasattr(dashboard, 'creator_user_name') and dashboard.creator_user_name:
+                owner_email = dashboard.creator_user_name
+            
+            discovered.append({
+                'object_id': dashboard.dashboard_id,
+                'workspace_id': workspace_id,
+                'object_type': 'lakeview_dashboard',
+                'object_name': dashboard.display_name or 'Untitled Dashboard',
+                'object_path': dashboard.path if hasattr(dashboard, 'path') else None,
+                'owner_email': owner_email,
+                'permissions': [],  # Lakeview dashboards use workspace object permissions
+                'metadata': {
+                    'lifecycle_state': dashboard.lifecycle_state.value if hasattr(dashboard, 'lifecycle_state') and dashboard.lifecycle_state else 'UNKNOWN',
+                    'create_time': str(dashboard.create_time) if hasattr(dashboard, 'create_time') else ''
+                },
+                'is_active': True,
+                'created_at': datetime.utcnow(),
+                'updated_at': datetime.utcnow()
+            })
+            lakeview_count += 1
+        
+        print(f"  ✓ Discovered {lakeview_count} Lakeview (AI/BI) dashboards")
+    except AttributeError:
+        print(f"  ⚠ Lakeview API not available in SDK - skipping Lakeview dashboards")
+    except Exception as e:
+        print(f"  ⚠ Error discovering Lakeview dashboards: {str(e)}")
+    
+    # Discover legacy SQL dashboards using the legacy API
+    try:
+        legacy_count = 0
+        # The legacy dashboards API uses sql/dashboards for permissions
         for dashboard in client.dashboards.list():
-            owner_email, permissions = get_permissions_safe(client, "dashboards", dashboard.id)
+            # Use sql/dashboards for permission type (legacy SQL dashboards)
+            owner_email, permissions = get_permissions_safe(client, "sql/dashboards", dashboard.id)
             # Prefer the owner from dashboard.user if available
-            if dashboard.user and dashboard.user.email:
+            if hasattr(dashboard, 'user') and dashboard.user and hasattr(dashboard.user, 'email'):
                 owner_email = dashboard.user.email
             
             discovered.append({
@@ -554,16 +643,18 @@ def discover_dashboards(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'object_path': None,
                 'owner_email': owner_email,
                 'permissions': permissions,
-                'metadata': {'created_at': str(dashboard.created_at)},
+                'metadata': {'created_at': str(dashboard.created_at) if hasattr(dashboard, 'created_at') else ''},
                 'is_active': True,
                 'created_at': datetime.utcnow(),
                 'updated_at': datetime.utcnow()
             })
+            legacy_count += 1
         
-        print(f"✓ Discovered {len(discovered)} dashboards")
+        print(f"  ✓ Discovered {legacy_count} legacy SQL dashboards")
     except Exception as e:
-        print(f"✗ Error discovering dashboards: {str(e)}")
+        print(f"  ⚠ Error discovering legacy SQL dashboards: {str(e)}")
     
+    print(f"✓ Discovered {len(discovered)} total dashboards")
     return discovered
 
 # COMMAND ----------
@@ -676,40 +767,68 @@ def discover_apps(client, workspace_id: str) -> List[Dict[str, Any]]:
     discovered = []
     
     try:
+        # Check if apps API is available
+        if not hasattr(client, 'apps'):
+            print(f"  ⚠ Apps API not available in SDK")
+            print(f"    Consider upgrading databricks-sdk to 0.20.0 or later")
+            return discovered
+        
+        # Check if list method exists
+        apps_api = client.apps
+        if not hasattr(apps_api, 'list'):
+            print(f"  ⚠ Apps API 'list' method not available in SDK")
+            print(f"    Consider upgrading databricks-sdk to 0.20.0 or later")
+            return discovered
+        
         # Apps API list() returns an iterator
-        apps_iterator = client.apps.list()
+        apps_iterator = apps_api.list()
         
         for app in apps_iterator:
             # Apps use get_permissions() method, not the standard permissions API
             permissions = []
             try:
-                app_perms = client.apps.get_permissions(app.name)
-                if app_perms and app_perms.access_control_list:
-                    for acl in app_perms.access_control_list:
-                        principal_email = None
-                        if hasattr(acl, 'user_name') and acl.user_name:
-                            principal_email = acl.user_name
-                        elif hasattr(acl, 'service_principal_name') and acl.service_principal_name:
-                            principal_email = acl.service_principal_name
-                        
-                        if principal_email and hasattr(acl, 'all_permissions') and acl.all_permissions:
-                            for perm in acl.all_permissions:
-                                permissions.append(Row(
-                                    principal_email=principal_email,
-                                    permission_level=perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
-                                ))
+                if hasattr(apps_api, 'get_permissions'):
+                    app_perms = apps_api.get_permissions(app.name)
+                    if app_perms and app_perms.access_control_list:
+                        for acl in app_perms.access_control_list:
+                            principal_email = None
+                            principal_type = 'user'
+                            if hasattr(acl, 'user_name') and acl.user_name:
+                                principal_email = acl.user_name
+                                principal_type = 'user'
+                            elif hasattr(acl, 'service_principal_name') and acl.service_principal_name:
+                                principal_email = acl.service_principal_name
+                                principal_type = 'service_principal'
+                            elif hasattr(acl, 'group_name') and acl.group_name:
+                                principal_email = acl.group_name
+                                principal_type = 'group'
+                            
+                            if principal_email and hasattr(acl, 'all_permissions') and acl.all_permissions:
+                                for perm in acl.all_permissions:
+                                    permissions.append(Row(
+                                        principal_email=principal_email,
+                                        principal_type=principal_type,
+                                        permission_level=perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
+                                    ))
             except Exception as perm_error:
                 print(f"  Warning: Could not get permissions for app {app.name}: {str(perm_error)}")
             
             # Extract status from app_status attribute (not status)
             status_str = 'UNKNOWN'
-            if app.app_status and app.app_status.state:
+            if hasattr(app, 'app_status') and app.app_status and hasattr(app.app_status, 'state') and app.app_status.state:
                 status_str = app.app_status.state.value if hasattr(app.app_status.state, 'value') else str(app.app_status.state)
             
             # Extract compute status
             compute_status_str = 'UNKNOWN'
-            if app.compute_status and app.compute_status.state:
+            if hasattr(app, 'compute_status') and app.compute_status and hasattr(app.compute_status, 'state') and app.compute_status.state:
                 compute_status_str = app.compute_status.state.value if hasattr(app.compute_status.state, 'value') else str(app.compute_status.state)
+            
+            # Get owner - could be 'creator' or 'owner' depending on SDK version
+            owner_email = 'unknown'
+            if hasattr(app, 'creator') and app.creator:
+                owner_email = app.creator
+            elif hasattr(app, 'owner') and app.owner:
+                owner_email = app.owner
             
             discovered.append({
                 'object_id': app.name,  # Apps use name as ID
@@ -717,14 +836,14 @@ def discover_apps(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'object_type': 'apps',
                 'object_name': app.name,
                 'object_path': None,
-                'owner_email': app.creator if app.creator else 'unknown',
+                'owner_email': owner_email,
                 'permissions': permissions,
                 'metadata': {
                     'app_status': status_str,
                     'compute_status': compute_status_str,
-                    'description': app.description if app.description else '',
-                    'create_time': app.create_time if app.create_time else '',
-                    'url': app.url if app.url else ''
+                    'description': app.description if hasattr(app, 'description') and app.description else '',
+                    'create_time': str(app.create_time) if hasattr(app, 'create_time') and app.create_time else '',
+                    'url': app.url if hasattr(app, 'url') and app.url else ''
                 },
                 'is_active': True,
                 'created_at': datetime.utcnow(),
@@ -733,10 +852,15 @@ def discover_apps(client, workspace_id: str) -> List[Dict[str, Any]]:
         
         print(f"✓ Discovered {len(discovered)} apps")
     except AttributeError as ae:
-        print(f"✗ Error: Apps API not available in this SDK version: {str(ae)}")
-        print(f"  Skipping apps discovery. Consider upgrading databricks-sdk package.")
+        print(f"  ⚠ Apps API not available in this SDK version: {str(ae)}")
+        print(f"    Consider upgrading databricks-sdk to 0.20.0 or later")
     except Exception as e:
-        print(f"✗ Error discovering apps: {str(e)}")
+        error_msg = str(e)
+        if "No API found" in error_msg or "404" in error_msg:
+            print(f"  ⚠ Apps API not available: {error_msg}")
+            print(f"    Apps may not be enabled for this workspace")
+        else:
+            print(f"✗ Error discovering apps: {error_msg}")
     
     return discovered
 
@@ -749,7 +873,8 @@ def discover_mlflow_experiments(client, workspace_id: str) -> List[Dict[str, Any
     
     try:
         for experiment in client.experiments.list_experiments():
-            owner_email, permissions = get_permissions_safe(client, "experiments", experiment.experiment_id)
+            # Use "mlflow-experiments" for permission type (not "experiments")
+            owner_email, permissions = get_permissions_safe(client, "mlflow-experiments", experiment.experiment_id)
             
             discovered.append({
                 'object_id': experiment.experiment_id,
@@ -774,30 +899,69 @@ def discover_mlflow_experiments(client, workspace_id: str) -> List[Dict[str, Any
 # COMMAND ----------
 
 def discover_monitors(client, workspace_id: str) -> List[Dict[str, Any]]:
-    """Discover all data quality monitors."""
+    """Discover all data quality monitors (Lakehouse Monitoring)."""
     print("Discovering data quality monitors...")
     discovered = []
     
     try:
-        for monitor in client.quality_monitors.list_monitors():
-            # Monitors don't have traditional permissions API
-            permissions = []
-            
-            discovered.append({
-                'object_id': monitor.table_name,  # Monitors use table name as ID
-                'workspace_id': workspace_id,
-                'object_type': 'monitors',
-                'object_name': monitor.table_name,
-                'object_path': None,
-                'owner_email': 'unknown',  # Monitors don't expose creator
-                'permissions': permissions,
-                'metadata': {'status': monitor.status.value if monitor.status else 'UNKNOWN'},
-                'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
-            })
+        # The correct SDK attribute is 'lakehouse_monitoring' (not 'quality_monitors')
+        # Note: This API may not be available in all SDK versions
+        if not hasattr(client, 'lakehouse_monitoring'):
+            print(f"  ⚠ Lakehouse Monitoring API not available in SDK")
+            print(f"    Consider upgrading databricks-sdk to 0.20.0 or later")
+            return discovered
         
-        print(f"✓ Discovered {len(discovered)} data quality monitors")
+        # List monitors for all tables by iterating through Unity Catalog
+        # The lakehouse_monitoring API requires a table_name to get specific monitors
+        # We'll discover monitors by scanning tables
+        monitor_count = 0
+        for catalog_info in client.catalogs.list():
+            catalog_name = catalog_info.name
+            try:
+                for schema_info in client.schemas.list(catalog_name=catalog_name):
+                    schema_name = schema_info.name
+                    try:
+                        for table in client.tables.list(catalog_name=catalog_name, schema_name=schema_name):
+                            full_name = f"{catalog_name}.{schema_name}.{table.name}"
+                            try:
+                                # Try to get monitor for this table
+                                monitor = client.lakehouse_monitoring.get(table_name=full_name)
+                                if monitor:
+                                    # Monitors don't have traditional permissions API
+                                    # Permissions are derived from the monitored table
+                                    permissions = []
+                                    owner_email = 'unknown'
+                                    
+                                    discovered.append({
+                                        'object_id': full_name,  # Monitors use table name as ID
+                                        'workspace_id': workspace_id,
+                                        'object_type': 'monitors',
+                                        'object_name': full_name,
+                                        'object_path': full_name,
+                                        'owner_email': owner_email,
+                                        'permissions': permissions,
+                                        'metadata': {
+                                            'status': monitor.status.value if hasattr(monitor, 'status') and monitor.status else 'UNKNOWN',
+                                            'output_schema_name': monitor.output_schema_name if hasattr(monitor, 'output_schema_name') else '',
+                                            'assets_dir': monitor.assets_dir if hasattr(monitor, 'assets_dir') else ''
+                                        },
+                                        'is_active': True,
+                                        'created_at': datetime.utcnow(),
+                                        'updated_at': datetime.utcnow()
+                                    })
+                                    monitor_count += 1
+                            except Exception:
+                                # Table doesn't have a monitor, skip
+                                pass
+                    except Exception:
+                        pass  # Skip schemas without access
+            except Exception:
+                pass  # Skip catalogs without access
+        
+        print(f"✓ Discovered {monitor_count} data quality monitors")
+    except AttributeError as ae:
+        print(f"  ⚠ Lakehouse Monitoring API not available in SDK: {str(ae)}")
+        print(f"    Consider upgrading databricks-sdk to 0.20.0 or later")
     except Exception as e:
         print(f"✗ Error discovering data quality monitors: {str(e)}")
     
@@ -1095,12 +1259,16 @@ def discover_vector_search_endpoints(client, workspace_id: str) -> List[Dict[str
                 if perms and perms.access_control_list:
                     for acl in perms.access_control_list:
                         principal_email = None
+                        principal_type = 'user'
                         if acl.user_name:
                             principal_email = acl.user_name
+                            principal_type = 'user'
                         elif acl.service_principal_name:
                             principal_email = acl.service_principal_name
+                            principal_type = 'service_principal'
                         elif acl.group_name:
                             principal_email = acl.group_name
+                            principal_type = 'group'
                         
                         if principal_email and acl.all_permissions:
                             for perm in acl.all_permissions:
@@ -1108,6 +1276,7 @@ def discover_vector_search_endpoints(client, workspace_id: str) -> List[Dict[str
                                     owner_email = principal_email
                                 permissions.append(Row(
                                     principal_email=principal_email,
+                                    principal_type=principal_type,
                                     permission_level=perm.permission_level.value
                                 ))
             except Exception as perm_error:
@@ -1627,19 +1796,35 @@ def discover_clean_rooms(client, workspace_id: str) -> List[Dict[str, Any]]:
     discovered = []
     
     try:
+        # Check if clean_rooms API is available
+        if not hasattr(client, 'clean_rooms'):
+            print(f"  ⚠ Clean Rooms API not available in SDK")
+            print(f"    Consider upgrading databricks-sdk to 0.20.0 or later")
+            return discovered
+        
+        # The clean_rooms.list() method returns an iterator of CleanRoom objects
         for clean_room in client.clean_rooms.list():
-            owner_email = clean_room.owner if hasattr(clean_room, 'owner') and clean_room.owner else 'unknown'
+            owner_email = 'unknown'
+            if hasattr(clean_room, 'owner'):
+                owner_email = clean_room.owner
+            elif hasattr(clean_room, 'creator'):
+                owner_email = clean_room.creator
+            
+            # Get clean room name safely
+            room_name = getattr(clean_room, 'name', 'Unknown')
             
             discovered.append({
-                'object_id': clean_room.name,
+                'object_id': room_name,
                 'workspace_id': workspace_id,
                 'object_type': 'cleanRoom',
-                'object_name': clean_room.name,
+                'object_name': room_name,
                 'object_path': None,
                 'owner_email': owner_email,
                 'permissions': [],  # Clean rooms don't have standard UC grants
                 'metadata': {
-                    'created_at': str(clean_room.created_at) if hasattr(clean_room, 'created_at') else ''
+                    'created_at': str(clean_room.created_at) if hasattr(clean_room, 'created_at') else '',
+                    'status': clean_room.status.value if hasattr(clean_room, 'status') and clean_room.status else 'UNKNOWN',
+                    'comment': clean_room.comment if hasattr(clean_room, 'comment') else ''
                 },
                 'is_active': True,
                 'created_at': datetime.utcnow(),
@@ -1647,8 +1832,17 @@ def discover_clean_rooms(client, workspace_id: str) -> List[Dict[str, Any]]:
             })
         
         print(f"✓ Discovered {len(discovered)} clean rooms")
+    except AttributeError as ae:
+        print(f"  ⚠ Clean Rooms API not available in SDK: {str(ae)}")
+        print(f"    Consider upgrading databricks-sdk to 0.20.0 or later")
     except Exception as e:
-        print(f"✗ Error discovering clean rooms: {str(e)}")
+        # More graceful handling for API not available errors
+        error_msg = str(e)
+        if "No API found" in error_msg or "404" in error_msg:
+            print(f"  ⚠ Clean Rooms API not available: {error_msg}")
+            print(f"    This feature may require a specific Databricks account configuration")
+        else:
+            print(f"✗ Error discovering clean rooms: {error_msg}")
     
     return discovered
 
@@ -1722,11 +1916,23 @@ def get_genie_space_permissions(space_id: str) -> List[Any]:
             data = response.json()
             if 'access_control_list' in data:
                 for acl in data['access_control_list']:
-                    principal_email = acl.get('user_name') or acl.get('service_principal_name') or acl.get('group_name')
+                    principal_email = None
+                    principal_type = 'user'
+                    if acl.get('user_name'):
+                        principal_email = acl.get('user_name')
+                        principal_type = 'user'
+                    elif acl.get('service_principal_name'):
+                        principal_email = acl.get('service_principal_name')
+                        principal_type = 'service_principal'
+                    elif acl.get('group_name'):
+                        principal_email = acl.get('group_name')
+                        principal_type = 'group'
+                    
                     if principal_email and 'all_permissions' in acl:
                         for perm in acl['all_permissions']:
                             permissions.append(Row(
                                 principal_email=principal_email,
+                                principal_type=principal_type,
                                 permission_level=perm.get('permission_level', 'UNKNOWN')
                             ))
         return permissions
@@ -2009,6 +2215,7 @@ if all_discovered:
         StructField('owner_email', StringType(), True),
         StructField('permissions', ArrayType(StructType([
             StructField('principal_email', StringType(), True),
+            StructField('principal_type', StringType(), True),  # 'user', 'group', or 'service_principal'
             StructField('permission_level', StringType(), True)
         ])), True),
         StructField('metadata', MapType(StringType(), StringType()), True),

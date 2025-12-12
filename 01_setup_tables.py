@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS {preapproved_objects_table} (
     owner_email STRING,
     permissions ARRAY<STRUCT<
         principal_email: STRING,
+        principal_type: STRING,
         permission_level: STRING
     >>,
     metadata MAP<STRING, STRING>,
@@ -103,7 +104,7 @@ CREATE TABLE IF NOT EXISTS {preapproved_objects_table} (
     updated_at TIMESTAMP
 )
 USING DELTA
-COMMENT 'Pre-approved objects and their permissions'
+COMMENT 'Pre-approved objects and their permissions. principal_type can be: user, group, or service_principal'
 """)
 
 print(f"✓ Created table: {preapproved_objects_table}")

@@ -58,6 +58,36 @@ from datetime import datetime
 from pyspark.sql.types import *
 from dbruntime.databricks_repl_context import get_context
 import json
+import re
+
+
+def _detect_principal_type(principal: str) -> str:
+    """
+    Detect principal type based on the principal identifier.
+    
+    Rules:
+    - Users: contain '@' in email format (e.g., user@company.com)
+    - Service Principals: follow UUID/GUID pattern (e.g., d118594b-a1db-41b2-a6e2-a201377c2aec)
+    - Groups: everything else (e.g., "admins", "data_engineers", "users")
+    
+    Returns: 'user', 'service_principal', or 'group'
+    """
+    if not principal:
+        return 'user'
+    
+    # UUID/GUID pattern for service principals
+    # Format: 8-4-4-4-12 hexadecimal characters
+    uuid_pattern = r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    
+    if re.match(uuid_pattern, principal):
+        # Service principal (UUID format)
+        return 'service_principal'
+    elif '@' in principal:
+        # User (email format)
+        return 'user'
+    else:
+        # Group (e.g., "admins", "data_engineers")
+        return 'group'
 
 # Get current workspace ID
 current_workspace_id = get_context().workspaceId
@@ -180,10 +210,16 @@ def delete_mlflow_experiment(client, experiment_id: str) -> Tuple[bool, Optional
         return (False, str(e))
 
 def delete_monitor(client, table_name: str) -> Tuple[bool, Optional[str]]:
-    """Delete a data monitoring monitor."""
+    """Delete a data quality monitor (Lakehouse Monitoring)."""
     try:
-        client.quality_monitors.delete(table_name)
-        return (True, None)
+        # The correct SDK attribute is 'lakehouse_monitoring' (not 'quality_monitors')
+        if hasattr(client, 'lakehouse_monitoring'):
+            client.lakehouse_monitoring.delete(table_name=table_name)
+            return (True, None)
+        else:
+            return (False, "Lakehouse Monitoring API not available in SDK. Consider upgrading databricks-sdk to 0.20.0 or later.")
+    except AttributeError as ae:
+        return (False, f"Lakehouse Monitoring API not available: {str(ae)}")
     except Exception as e:
         return (False, str(e))
 
@@ -260,10 +296,36 @@ def delete_uc_registered_model(client, full_name: str) -> Tuple[bool, Optional[s
         return (False, str(e))
 
 def delete_dashboard(client, dashboard_id: str) -> Tuple[bool, Optional[str]]:
-    """Trash a dashboard."""
+    """Trash a dashboard (supports both Lakeview and legacy SQL dashboards)."""
     try:
-        client.dashboards.delete(dashboard_id)
+        # Try Lakeview dashboard first (newer AI/BI dashboards)
+        try:
+            client.lakeview.trash(dashboard_id)
+            return (True, None)
+        except AttributeError:
+            pass  # Lakeview API not available
+        except Exception as lakeview_error:
+            # If it's not a Lakeview dashboard, try legacy
+            if "not found" not in str(lakeview_error).lower():
+                pass  # Try legacy anyway
+        
+        # Try legacy SQL dashboard API
+        try:
+            client.dashboards.delete(dashboard_id)
+            return (True, None)
+        except Exception as legacy_error:
+            return (False, f"Failed to delete dashboard: {str(legacy_error)}")
+    except Exception as e:
+        return (False, str(e))
+
+
+def delete_lakeview_dashboard(client, dashboard_id: str) -> Tuple[bool, Optional[str]]:
+    """Trash a Lakeview (AI/BI) dashboard specifically."""
+    try:
+        client.lakeview.trash(dashboard_id)
         return (True, None)
+    except AttributeError:
+        return (False, "Lakeview API not available in SDK")
     except Exception as e:
         return (False, str(e))
 
@@ -580,7 +642,8 @@ def get_delete_function(object_type: str):
         'alert': delete_alert,
         'warehouse': delete_warehouse,
         'query': delete_query,
-        'dashboard': delete_dashboard,
+        'dashboard': delete_dashboard,  # Handles both legacy and Lakeview
+        'lakeview_dashboard': delete_lakeview_dashboard,  # Lakeview-specific
         # ML & Serving
         'servingEndpoint': delete_serving_endpoint,
         'apps': delete_app,
@@ -663,8 +726,12 @@ def get_resource_definition(client, object_type: str, object_id: str) -> Optiona
             definition = exp.as_dict()
 
         elif object_type == 'monitors':
-            monitor = client.quality_monitors.get(table_name=object_id)
-            definition = monitor.as_dict()
+            # Use lakehouse_monitoring API (not quality_monitors)
+            if hasattr(client, 'lakehouse_monitoring'):
+                monitor = client.lakehouse_monitoring.get(table_name=object_id)
+                definition = monitor.as_dict()
+            else:
+                definition = {'table_name': object_id, 'note': 'Lakehouse Monitoring API not available for full backup'}
             
         elif object_type == 'cluster':
             cluster = client.clusters.get(cluster_id=object_id)
@@ -703,8 +770,25 @@ def get_resource_definition(client, object_type: str, object_id: str) -> Optiona
             definition = model.as_dict()
             
         elif object_type == 'dashboard':
-            dashboard = client.dashboards.get(dashboard_id=object_id)
-            definition = dashboard.as_dict()
+            # Try Lakeview dashboard first, then legacy
+            try:
+                if hasattr(client, 'lakeview'):
+                    dashboard = client.lakeview.get(dashboard_id=object_id)
+                    definition = dashboard.as_dict()
+                else:
+                    dashboard = client.dashboards.get(dashboard_id=object_id)
+                    definition = dashboard.as_dict()
+            except Exception:
+                # Fallback to legacy SQL dashboard API
+                dashboard = client.dashboards.get(dashboard_id=object_id)
+                definition = dashboard.as_dict()
+        
+        elif object_type == 'lakeview_dashboard':
+            if hasattr(client, 'lakeview'):
+                dashboard = client.lakeview.get(dashboard_id=object_id)
+                definition = dashboard.as_dict()
+            else:
+                definition = {'dashboard_id': object_id, 'note': 'Lakeview API not available for full backup'}
             
         elif object_type == 'query':
             query = client.queries.get(id=object_id)
@@ -827,8 +911,9 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
         workspace_type_mapping = {
             # Workspace objects
             "notebook": "notebooks",
-            "dashboard": "dashboards",
-            "query": "queries",
+            "dashboard": "sql/dashboards",  # Legacy SQL dashboards use sql/dashboards
+            "lakeview_dashboard": "dashboards",  # Lakeview dashboards - note: may not support permissions API
+            "query": "sql/queries",  # Legacy SQL queries use sql/queries
             "folder": "directories",
             "directory": "directories",
             "repo": "repos",
@@ -844,7 +929,7 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
             "pipeline": "pipelines",
             # SQL
             "warehouse": "sql/warehouses",
-            "alert": "sql/alerts",
+            "alert": "sql/alerts",  # Legacy SQL alerts
             # Apps & Serving
             "apps": "apps",
             "servingEndpoint": "serving-endpoints",
@@ -855,7 +940,7 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
             # Vector Search
             "vectorSearchEndpoint": "vector-search-endpoints",
             # MLflow
-            "mlflowExperiments": "experiments",
+            "mlflowExperiments": "mlflow-experiments",  # Fixed: was "experiments"
             # Secrets (uses different API)
             "secretScope": "secrets/scopes",
         }
@@ -1087,11 +1172,21 @@ def _revert_uc_permissions(client, object_id: str, object_type: str, approved_pe
 def _revert_workspace_permissions(client, object_id: str, object_type: str, approved_perms, type_mapping: dict) -> Tuple[bool, Optional[str]]:
     """
     Revert workspace object permissions using permissions API.
+    
+    Handles different principal types (users, groups, service principals) correctly.
     """
     try:
         permissions_object_type = type_mapping.get(object_type)
         if not permissions_object_type:
             return (False, f"Unsupported object type for permission revert: {object_type}")
+        
+        # Special handling for Lakeview dashboards - they may not support permissions API
+        if object_type == 'lakeview_dashboard':
+            print(f"  → Lakeview dashboards use workspace object permissions")
+            print(f"  → Attempting to revert permissions via workspace path")
+            # Lakeview dashboards permissions are managed differently
+            # They typically inherit from the workspace folder they're in
+            return (False, "Lakeview dashboards don't support direct permission revert. Permissions are inherited from workspace folder.")
         
         if not approved_perms or not approved_perms[0].permissions:
             # No approved permissions found - remove all explicit permissions
@@ -1119,11 +1214,41 @@ def _revert_workspace_permissions(client, object_id: str, object_type: str, appr
         for perm in permissions_list:
             principal_email = perm['principal_email']
             permission_level = perm['permission_level']
+            # Use stored principal_type if available, otherwise detect from naming conventions
+            principal_type = perm.get('principal_type', None)
             
-            request = AccessControlRequest(
-                user_name=principal_email,
-                permission_level=PermissionLevel(permission_level)
-            )
+            request_kwargs = {
+                'permission_level': PermissionLevel(permission_level)
+            }
+            
+            if principal_type:
+                # Use the stored principal type for accurate permission setting
+                if principal_type == 'user':
+                    request_kwargs['user_name'] = principal_email
+                elif principal_type == 'service_principal':
+                    request_kwargs['service_principal_name'] = principal_email
+                elif principal_type == 'group':
+                    request_kwargs['group_name'] = principal_email
+                else:
+                    # Unknown type, fall back to detection
+                    principal_type = _detect_principal_type(principal_email)
+                    if principal_type == 'user':
+                        request_kwargs['user_name'] = principal_email
+                    elif principal_type == 'service_principal':
+                        request_kwargs['service_principal_name'] = principal_email
+                    else:
+                        request_kwargs['group_name'] = principal_email
+            else:
+                # Fallback: Detect principal type based on naming conventions
+                detected_type = _detect_principal_type(principal_email)
+                if detected_type == 'user':
+                    request_kwargs['user_name'] = principal_email
+                elif detected_type == 'service_principal':
+                    request_kwargs['service_principal_name'] = principal_email
+                else:
+                    request_kwargs['group_name'] = principal_email
+            
+            request = AccessControlRequest(**request_kwargs)
             acl_requests.append(request)
         
         # Set permissions to pre-approved state
