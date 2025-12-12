@@ -210,11 +210,11 @@ def delete_mlflow_experiment(client, experiment_id: str) -> Tuple[bool, Optional
         return (False, str(e))
 
 def delete_monitor(client, table_name: str) -> Tuple[bool, Optional[str]]:
-    """Delete a data quality monitor (Lakehouse Monitoring)."""
+    """Delete a data quality monitor."""
     try:
-        # The correct SDK attribute is 'lakehouse_monitoring' (not 'quality_monitors')
-        if hasattr(client, 'lakehouse_monitoring'):
-            client.lakehouse_monitoring.delete(table_name=table_name)
+        # Use quality_monitors API (the correct SDK attribute name)
+        if hasattr(client, 'quality_monitors'):
+            client.quality_monitors.delete(table_name=table_name)
             return (True, None)
         else:
             return (False, "Lakehouse Monitoring API not available in SDK. Consider upgrading databricks-sdk to 0.20.0 or later.")
@@ -726,9 +726,9 @@ def get_resource_definition(client, object_type: str, object_id: str) -> Optiona
             definition = exp.as_dict()
 
         elif object_type == 'monitors':
-            # Use lakehouse_monitoring API (not quality_monitors)
-            if hasattr(client, 'lakehouse_monitoring'):
-                monitor = client.lakehouse_monitoring.get(table_name=object_id)
+            # Use quality_monitors API (the correct SDK attribute name)
+            if hasattr(client, 'quality_monitors'):
+                monitor = client.quality_monitors.get(table_name=object_id)
                 definition = monitor.as_dict()
             else:
                 definition = {'table_name': object_id, 'note': 'Lakehouse Monitoring API not available for full backup'}

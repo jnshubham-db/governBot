@@ -564,20 +564,32 @@ def discover_queries(client, workspace_id: str) -> List[Dict[str, Any]]:
     
     try:
         for query in client.queries.list():
-            owner_email, permissions = get_permissions_safe(client, "queries", query.id)
-            # Prefer the owner from query.user if available
-            if query.user and query.user.email:
-                owner_email = query.user.email
+            # Get query ID - the attribute is 'id' in the SDK
+            query_id = query.id
+            
+            # Get permissions using the query ID
+            owner_email, permissions = get_permissions_safe(client, "queries", query_id)
+            
+            # Try to extract owner from other attributes if available
+            # Note: 'user' attribute may not exist in all SDK versions
+            if owner_email == 'unknown':
+                if hasattr(query, 'owner_user_name') and query.owner_user_name:
+                    owner_email = query.owner_user_name
+                elif hasattr(query, 'run_as_user_name') and query.run_as_user_name:
+                    owner_email = query.run_as_user_name
             
             discovered.append({
-                'object_id': query.id,
+                'object_id': query_id,
                 'workspace_id': workspace_id,
                 'object_type': 'query',
-                'object_name': query.name or 'Untitled Query',
+                'object_name': getattr(query, 'name', None) or getattr(query, 'display_name', None) or 'Untitled Query',
                 'object_path': None,
                 'owner_email': owner_email,
                 'permissions': permissions,
-                'metadata': {'description': query.description or '', 'created_at': str(query.created_at)},
+                'metadata': {
+                    'description': getattr(query, 'description', '') or '',
+                    'created_at': str(getattr(query, 'create_time', '')) or ''
+                },
                 'is_active': True,
                 'created_at': datetime.utcnow(),
                 'updated_at': datetime.utcnow()
@@ -592,98 +604,144 @@ def discover_queries(client, workspace_id: str) -> List[Dict[str, Any]]:
 # COMMAND ----------
 
 def discover_dashboards(client, workspace_id: str) -> List[Dict[str, Any]]:
-    """Discover all dashboards (both Lakeview/AI-BI and legacy SQL dashboards)."""
+    """Discover all dashboards (both AI/BI and legacy DBSQL dashboards)."""
     print("Discovering dashboards...")
     discovered = []
     
-    # Discover Lakeview (AI/BI) dashboards
+    # Discover AI/BI dashboards using client.dashboards.list()
+    # These use "dashboards" permission type with resource_id
     try:
-        lakeview_count = 0
-        for dashboard in client.lakeview.list():
+        aibi_count = 0
+        for dashboard in client.dashboards.list():
+            # AI/BI dashboards identify by resource_id
+            dashboard_id = getattr(dashboard, 'resource_id', None) or getattr(dashboard, 'id', None)
+            if not dashboard_id:
+                continue
+            
             # Extract owner from dashboard metadata
             owner_email = 'unknown'
             if hasattr(dashboard, 'creator_user_name') and dashboard.creator_user_name:
                 owner_email = dashboard.creator_user_name
             
-            # Lakeview dashboards use "dashboards" permission type with dashboard_id
-            # Try to get permissions using the dashboard_id
+            # Get permissions using "dashboards" permission type and resource_id
             permissions = []
-            dashboard_id = dashboard.dashboard_id
-            dashboard_path = dashboard.path if hasattr(dashboard, 'path') else None
-            
-            # Try getting permissions using the dashboards permission type
             try:
-                owner_from_perms, permissions = get_permissions_safe(client, "dashboards", dashboard_id)
-                if owner_email == 'unknown' and owner_from_perms != 'unknown':
-                    owner_email = owner_from_perms
-            except Exception:
-                pass
+                acl = client.permissions.get(
+                    request_object_type="dashboards",
+                    request_object_id=dashboard_id
+                )
+                if acl and acl.access_control_list:
+                    for ace in acl.access_control_list:
+                        principal_email = ace.user_name or ace.service_principal_name or ace.group_name
+                        principal_type = 'user'
+                        if ace.user_name:
+                            principal_type = 'user'
+                        elif ace.service_principal_name:
+                            principal_type = 'service_principal'
+                        elif ace.group_name:
+                            principal_type = 'group'
+                        
+                        if principal_email and ace.all_permissions:
+                            for perm in ace.all_permissions:
+                                perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
+                                if perm_level == 'CAN_MANAGE' and not perm.inherited:
+                                    owner_email = principal_email
+                                permissions.append(Row(
+                                    principal_email=principal_email,
+                                    principal_type=principal_type,
+                                    permission_level=perm_level
+                                ))
+            except Exception as perm_err:
+                print(f"  ⚠️  Permission fetch failed for dashboards/{dashboard_id}: {str(perm_err)}")
             
-            # If no permissions found and we have a path, try getting workspace object permissions
-            if not permissions and dashboard_path:
-                try:
-                    # Get the workspace object ID for this path
-                    ws_obj = client.workspace.get_status(dashboard_path)
-                    if ws_obj and ws_obj.object_id:
-                        owner_from_perms, permissions = get_permissions_safe(client, "directories", str(ws_obj.object_id))
-                        if owner_email == 'unknown' and owner_from_perms != 'unknown':
-                            owner_email = owner_from_perms
-                except Exception:
-                    pass
+            dashboard_name = getattr(dashboard, 'display_name', None) or getattr(dashboard, 'name', None) or 'Untitled Dashboard'
+            dashboard_path = getattr(dashboard, 'path', None)
             
             discovered.append({
                 'object_id': dashboard_id,
                 'workspace_id': workspace_id,
                 'object_type': 'lakeview_dashboard',
-                'object_name': dashboard.display_name or 'Untitled Dashboard',
+                'object_name': dashboard_name,
                 'object_path': dashboard_path,
                 'owner_email': owner_email,
                 'permissions': permissions,
                 'metadata': {
                     'lifecycle_state': dashboard.lifecycle_state.value if hasattr(dashboard, 'lifecycle_state') and dashboard.lifecycle_state else 'UNKNOWN',
-                    'create_time': str(dashboard.create_time) if hasattr(dashboard, 'create_time') else ''
+                    'create_time': str(getattr(dashboard, 'create_time', ''))
                 },
                 'is_active': True,
                 'created_at': datetime.utcnow(),
                 'updated_at': datetime.utcnow()
             })
-            lakeview_count += 1
+            aibi_count += 1
         
-        print(f"  ✓ Discovered {lakeview_count} Lakeview (AI/BI) dashboards")
-    except AttributeError:
-        print(f"  ⚠ Lakeview API not available in SDK - skipping Lakeview dashboards")
+        print(f"  ✓ Discovered {aibi_count} AI/BI dashboards")
+    except AttributeError as ae:
+        print(f"  ⚠ Dashboards API not available in SDK: {str(ae)}")
     except Exception as e:
-        print(f"  ⚠ Error discovering Lakeview dashboards: {str(e)}")
+        print(f"  ⚠ Error discovering AI/BI dashboards: {str(e)}")
     
-    # Discover legacy SQL dashboards using the legacy API
+    # Discover legacy DBSQL dashboards using client.dbsql_dashboards.list()
+    # These use "dbsql-dashboards" permission type
     try:
         legacy_count = 0
-        # Legacy SQL dashboards use "dbsql-dashboards" for permissions API
-        for dashboard in client.dashboards.list():
-            # Use dbsql-dashboards for permission type (legacy SQL dashboards)
-            owner_email, permissions = get_permissions_safe(client, "dbsql-dashboards", dashboard.id)
-            # Prefer the owner from dashboard.user if available
-            if hasattr(dashboard, 'user') and dashboard.user and hasattr(dashboard.user, 'email'):
-                owner_email = dashboard.user.email
+        # Check if dbsql_dashboards API is available
+        if hasattr(client, 'dbsql_dashboards'):
+            for dashboard in client.dbsql_dashboards.list():
+                dashboard_id = dashboard.id
+                
+                # Get permissions using "dbsql-dashboards" permission type
+                permissions = []
+                owner_email = 'unknown'
+                try:
+                    acl = client.permissions.get(
+                        request_object_type="dbsql-dashboards",
+                        request_object_id=dashboard_id
+                    )
+                    if acl and acl.access_control_list:
+                        for ace in acl.access_control_list:
+                            principal_email = ace.user_name or ace.service_principal_name or ace.group_name
+                            principal_type = 'user'
+                            if ace.user_name:
+                                principal_type = 'user'
+                            elif ace.service_principal_name:
+                                principal_type = 'service_principal'
+                            elif ace.group_name:
+                                principal_type = 'group'
+                            
+                            if principal_email and ace.all_permissions:
+                                for perm in ace.all_permissions:
+                                    perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
+                                    if perm_level == 'CAN_MANAGE' and not perm.inherited:
+                                        owner_email = principal_email
+                                    permissions.append(Row(
+                                        principal_email=principal_email,
+                                        principal_type=principal_type,
+                                        permission_level=perm_level
+                                    ))
+                except Exception as perm_err:
+                    print(f"  ⚠️  Permission fetch failed for dbsql-dashboards/{dashboard_id}: {str(perm_err)}")
+                
+                discovered.append({
+                    'object_id': dashboard_id,
+                    'workspace_id': workspace_id,
+                    'object_type': 'dashboard',
+                    'object_name': getattr(dashboard, 'name', None) or 'Untitled Dashboard',
+                    'object_path': None,
+                    'owner_email': owner_email,
+                    'permissions': permissions,
+                    'metadata': {'created_at': str(getattr(dashboard, 'created_at', ''))},
+                    'is_active': True,
+                    'created_at': datetime.utcnow(),
+                    'updated_at': datetime.utcnow()
+                })
+                legacy_count += 1
             
-            discovered.append({
-                'object_id': dashboard.id,
-                'workspace_id': workspace_id,
-                'object_type': 'dashboard',
-                'object_name': dashboard.name or 'Untitled Dashboard',
-                'object_path': None,
-                'owner_email': owner_email,
-                'permissions': permissions,
-                'metadata': {'created_at': str(dashboard.created_at) if hasattr(dashboard, 'created_at') else ''},
-                'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
-            })
-            legacy_count += 1
-        
-        print(f"  ✓ Discovered {legacy_count} legacy SQL dashboards")
+            print(f"  ✓ Discovered {legacy_count} legacy DBSQL dashboards")
+        else:
+            print(f"  ⚠ dbsql_dashboards API not available in SDK - skipping legacy dashboards")
     except Exception as e:
-        print(f"  ⚠ Error discovering legacy SQL dashboards: {str(e)}")
+        print(f"  ⚠ Error discovering legacy DBSQL dashboards: {str(e)}")
     
     print(f"✓ Discovered {len(discovered)} total dashboards")
     return discovered
@@ -903,16 +961,20 @@ def discover_mlflow_experiments(client, workspace_id: str) -> List[Dict[str, Any
     discovered = []
     
     try:
-        for experiment in client.experiments.list_experiments():
-            # Use "experiments" for permission type (the API expects "experiments", not "mlflow-experiments")
-            owner_email, permissions = get_permissions_safe(client, "experiments", experiment.experiment_id)
+        # Use experiments.list() as per the SDK documentation
+        for experiment in client.experiments.list():
+            experiment_id = str(experiment.experiment_id)
+            experiment_name = experiment.name or ''
+            
+            # Get permissions using "experiments" object type
+            owner_email, permissions = get_permissions_safe(client, "experiments", experiment_id)
             
             discovered.append({
-                'object_id': experiment.experiment_id,
+                'object_id': experiment_id,
                 'workspace_id': workspace_id,
                 'object_type': 'mlflowExperiments',
-                'object_name': experiment.name or 'Unnamed Experiment',
-                'object_path': None,
+                'object_name': experiment_name or 'Unnamed Experiment',
+                'object_path': experiment_name if experiment_name.startswith('/') else None,
                 'owner_email': owner_email,  # Extracted from permissions
                 'permissions': permissions,
                 'metadata': {'artifact_location': experiment.artifact_location or ''},
@@ -930,38 +992,68 @@ def discover_mlflow_experiments(client, workspace_id: str) -> List[Dict[str, Any
 # COMMAND ----------
 
 def discover_monitors(client, workspace_id: str) -> List[Dict[str, Any]]:
-    """Discover all data quality monitors (Lakehouse Monitoring)."""
+    """Discover all data quality monitors."""
     print("Discovering data quality monitors...")
     discovered = []
     
     try:
-        # The correct SDK attribute is 'lakehouse_monitoring' (not 'quality_monitors')
-        # Note: This API may not be available in all SDK versions
-        if not hasattr(client, 'lakehouse_monitoring'):
-            print(f"  ⚠ Lakehouse Monitoring API not available in SDK")
-            print(f"    Consider upgrading databricks-sdk to 0.20.0 or later")
+        from databricks.sdk.service.catalog import SecurableType
+        
+        # Check if quality_monitors API is available (this is the correct attribute name)
+        if not hasattr(client, 'quality_monitors'):
+            print(f"  ⚠ Quality Monitors API not available in SDK")
+            print(f"    This feature requires databricks-sdk with quality_monitors support")
             return discovered
         
         # List monitors for all tables by iterating through Unity Catalog
-        # The lakehouse_monitoring API requires a table_name to get specific monitors
+        # The quality_monitors API requires a table_name to get specific monitors
         # We'll discover monitors by scanning tables
         monitor_count = 0
         for catalog_info in client.catalogs.list():
             catalog_name = catalog_info.name
+            # Skip system catalogs
+            if catalog_name.startswith('system'):
+                continue
             try:
                 for schema_info in client.schemas.list(catalog_name=catalog_name):
                     schema_name = schema_info.name
+                    # Skip information_schema
+                    if schema_name == 'information_schema':
+                        continue
                     try:
                         for table in client.tables.list(catalog_name=catalog_name, schema_name=schema_name):
                             full_name = f"{catalog_name}.{schema_name}.{table.name}"
                             try:
-                                # Try to get monitor for this table
-                                monitor = client.lakehouse_monitoring.get(table_name=full_name)
+                                # Try to get monitor for this table using quality_monitors.get()
+                                monitor = client.quality_monitors.get(full_name)
                                 if monitor:
-                                    # Monitors don't have traditional permissions API
-                                    # Permissions are derived from the monitored table
+                                    # Monitors don't have their own permissions API
+                                    # Permissions are derived from the monitored table's UC grants
                                     permissions = []
                                     owner_email = 'unknown'
+                                    
+                                    # Get table grants for monitor permissions
+                                    try:
+                                        grants = client.grants.get(
+                                            securable_type=SecurableType.TABLE,
+                                            full_name=full_name
+                                        )
+                                        if grants and grants.privilege_assignments:
+                                            for assignment in grants.privilege_assignments:
+                                                principal = assignment.principal
+                                                if principal and assignment.privileges:
+                                                    principal_type = _detect_principal_type(principal)
+                                                    for privilege in assignment.privileges:
+                                                        priv_name = privilege.privilege.value if hasattr(privilege.privilege, 'value') else str(privilege.privilege)
+                                                        if priv_name in ['ALL_PRIVILEGES', 'OWNER']:
+                                                            owner_email = principal
+                                                        permissions.append(Row(
+                                                            principal_email=principal,
+                                                            principal_type=principal_type,
+                                                            permission_level=priv_name
+                                                        ))
+                                    except Exception:
+                                        pass  # Skip if grants fail
                                     
                                     discovered.append({
                                         'object_id': full_name,  # Monitors use table name as ID
@@ -972,15 +1064,16 @@ def discover_monitors(client, workspace_id: str) -> List[Dict[str, Any]]:
                                         'owner_email': owner_email,
                                         'permissions': permissions,
                                         'metadata': {
-                                            'status': monitor.status.value if hasattr(monitor, 'status') and monitor.status else 'UNKNOWN',
-                                            'output_schema_name': monitor.output_schema_name if hasattr(monitor, 'output_schema_name') else '',
-                                            'assets_dir': monitor.assets_dir if hasattr(monitor, 'assets_dir') else ''
+                                            'status': getattr(monitor, 'status', 'UNKNOWN'),
+                                            'output_schema_name': getattr(monitor, 'output_schema_name', ''),
+                                            'assets_dir': getattr(monitor, 'assets_dir', '')
                                         },
                                         'is_active': True,
                                         'created_at': datetime.utcnow(),
                                         'updated_at': datetime.utcnow()
                                     })
                                     monitor_count += 1
+                                    print(f"    Found monitor on table: {full_name}")
                             except Exception:
                                 # Table doesn't have a monitor, skip
                                 pass
@@ -991,8 +1084,7 @@ def discover_monitors(client, workspace_id: str) -> List[Dict[str, Any]]:
         
         print(f"✓ Discovered {monitor_count} data quality monitors")
     except AttributeError as ae:
-        print(f"  ⚠ Lakehouse Monitoring API not available in SDK: {str(ae)}")
-        print(f"    Consider upgrading databricks-sdk to 0.20.0 or later")
+        print(f"  ⚠ Quality Monitors API not available in SDK: {str(ae)}")
     except Exception as e:
         print(f"✗ Error discovering data quality monitors: {str(e)}")
     
@@ -1179,14 +1271,36 @@ def discover_serving_endpoints(client, workspace_id: str) -> List[Dict[str, Any]
             if hasattr(endpoint, 'creator') and endpoint.creator:
                 owner_email = endpoint.creator
             
-            # Try to get permissions - some endpoints may not support it
+            # Get permissions using SDK permissions API with "serving-endpoints" object type and endpoint.name
             permissions = []
             try:
-                owner_from_perms, permissions = get_permissions_safe(client, "serving-endpoints", endpoint_name)
-                if owner_email == 'unknown' and owner_from_perms != 'unknown':
-                    owner_email = owner_from_perms
-            except Exception:
-                pass  # Silently skip permission errors for endpoints
+                acl = client.permissions.get(
+                    request_object_type="serving-endpoints",
+                    request_object_id=endpoint_name
+                )
+                if acl and acl.access_control_list:
+                    for ace in acl.access_control_list:
+                        principal_email = ace.user_name or ace.service_principal_name or ace.group_name
+                        principal_type = 'user'
+                        if ace.user_name:
+                            principal_type = 'user'
+                        elif ace.service_principal_name:
+                            principal_type = 'service_principal'
+                        elif ace.group_name:
+                            principal_type = 'group'
+                        
+                        if principal_email and ace.all_permissions:
+                            for perm in ace.all_permissions:
+                                perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
+                                if perm_level == 'CAN_MANAGE' and not perm.inherited:
+                                    owner_email = principal_email
+                                permissions.append(Row(
+                                    principal_email=principal_email,
+                                    principal_type=principal_type,
+                                    permission_level=perm_level
+                                ))
+            except Exception as perm_err:
+                print(f"  ⚠️  Permission fetch failed for serving-endpoints/{endpoint_name}: {str(perm_err)}")
             
             # Get state safely
             state_str = 'UNKNOWN'
@@ -1227,48 +1341,64 @@ def discover_registered_models(client, workspace_id: str) -> List[Dict[str, Any]
     discovered = []
     
     try:
-        # List all catalogs first
-        for catalog_info in client.catalogs.list():
-            catalog_name = catalog_info.name
+        from databricks.sdk.service.catalog import SecurableType
+        
+        # List all models - can pass catalog_name and schema_name optionally
+        for model in client.registered_models.list():
+            full_name = model.full_name
+            
+            # Skip system models (e.g., system.ai.*)
+            if full_name.startswith('system.'):
+                continue
+            
+            owner_email = model.owner if hasattr(model, 'owner') and model.owner else 'unknown'
+            
+            # Get UC grants for the model using FUNCTION securable type
+            permissions = []
             try:
-                # List schemas in each catalog
-                for schema_info in client.schemas.list(catalog_name=catalog_name):
-                    schema_name = schema_info.name
-                    try:
-                        # List models in each schema
-                        for model in client.registered_models.list(
-                            catalog_name=catalog_name,
-                            schema_name=schema_name
-                        ):
-                            full_name = f"{catalog_name}.{schema_name}.{model.name}"
-                            owner_email = model.owner if hasattr(model, 'owner') and model.owner else 'unknown'
-                            
-                            # Get UC grants for the model
-                            owner_from_grants, permissions = get_uc_grants_safe(client, 'REGISTERED_MODEL', full_name)
-                            if owner_email == 'unknown' and owner_from_grants != 'unknown':
-                                owner_email = owner_from_grants
-                            
-                            discovered.append({
-                                'object_id': full_name,
-                                'workspace_id': workspace_id,
-                                'object_type': 'registeredModel',
-                                'object_name': model.name,
-                                'object_path': full_name,
-                                'owner_email': owner_email,
-                                'permissions': permissions,
-                                'metadata': {
-                                    'catalog': catalog_name,
-                                    'schema': schema_name,
-                                    'created_at': str(model.created_at) if hasattr(model, 'created_at') else ''
-                                },
-                                'is_active': True,
-                                'created_at': datetime.utcnow(),
-                                'updated_at': datetime.utcnow()
-                            })
-                    except Exception as model_error:
-                        pass  # Skip schemas without model access
-            except Exception as schema_error:
-                pass  # Skip catalogs without schema access
+                grants = client.grants.get(
+                    securable_type=SecurableType.FUNCTION,
+                    full_name=full_name
+                )
+                if grants and grants.privilege_assignments:
+                    for assignment in grants.privilege_assignments:
+                        principal = assignment.principal if hasattr(assignment, 'principal') else None
+                        if principal and assignment.privileges:
+                            principal_type = _detect_principal_type(principal)
+                            for privilege in assignment.privileges:
+                                priv_name = privilege.privilege.value if hasattr(privilege.privilege, 'value') else str(privilege.privilege)
+                                if priv_name in ['ALL_PRIVILEGES', 'OWNER']:
+                                    owner_email = principal
+                                permissions.append(Row(
+                                    principal_email=principal,
+                                    principal_type=principal_type,
+                                    permission_level=priv_name
+                                ))
+            except Exception as grant_error:
+                pass  # Silently fail for grant errors
+            
+            # Extract catalog and schema from full_name
+            parts = full_name.split('.')
+            catalog_name = parts[0] if len(parts) > 0 else ''
+            schema_name = parts[1] if len(parts) > 1 else ''
+            
+            discovered.append({
+                'object_id': full_name,
+                'workspace_id': workspace_id,
+                'object_type': 'registeredModel',
+                'object_name': model.name,
+                'object_path': full_name,
+                'owner_email': owner_email,
+                'permissions': permissions,
+                'metadata': {
+                    'catalog': catalog_name,
+                    'schema': schema_name,
+                    'created_at': str(model.created_at) if hasattr(model, 'created_at') else ''
+                },
+                'is_active': True,
+                'created_at': datetime.utcnow(),
+                'updated_at': datetime.utcnow()
+            })
         
         print(f"✓ Discovered {len(discovered)} registered models")
     except Exception as e:
@@ -1320,42 +1450,44 @@ def discover_vector_search_endpoints(client, workspace_id: str) -> List[Dict[str
     try:
         for endpoint in client.vector_search_endpoints.list_endpoints():
             owner_email = endpoint.creator if hasattr(endpoint, 'creator') and endpoint.creator else 'unknown'
+            endpoint_name = endpoint.name
             
-            # Get permissions using the permissions API
+            # Get permissions using SDK permissions API with "vector-search-endpoints" object type
             permissions = []
             try:
-                perms = client.permissions.get(object_type="vector-search-endpoints", object_id=endpoint.name)
-                if perms and perms.access_control_list:
-                    for acl in perms.access_control_list:
-                        principal_email = None
+                acl = client.permissions.get(
+                    request_object_type="vector-search-endpoints",
+                    request_object_id=endpoint_name
+                )
+                if acl and acl.access_control_list:
+                    for ace in acl.access_control_list:
+                        principal_email = ace.user_name or ace.service_principal_name or ace.group_name
                         principal_type = 'user'
-                        if acl.user_name:
-                            principal_email = acl.user_name
+                        if ace.user_name:
                             principal_type = 'user'
-                        elif acl.service_principal_name:
-                            principal_email = acl.service_principal_name
+                        elif ace.service_principal_name:
                             principal_type = 'service_principal'
-                        elif acl.group_name:
-                            principal_email = acl.group_name
+                        elif ace.group_name:
                             principal_type = 'group'
                         
-                        if principal_email and acl.all_permissions:
-                            for perm in acl.all_permissions:
-                                if perm.permission_level.value == 'CAN_MANAGE' and not perm.inherited:
+                        if principal_email and ace.all_permissions:
+                            for perm in ace.all_permissions:
+                                perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
+                                if perm_level == 'CAN_MANAGE' and not perm.inherited:
                                     owner_email = principal_email
                                 permissions.append(Row(
                                     principal_email=principal_email,
                                     principal_type=principal_type,
-                                    permission_level=perm.permission_level.value
+                                    permission_level=perm_level
                                 ))
             except Exception as perm_error:
-                pass  # Silently fail for permission errors
+                print(f"  ⚠️  Permission fetch failed for vector-search-endpoints/{endpoint_name}: {str(perm_error)}")
             
             discovered.append({
-                'object_id': endpoint.name,
+                'object_id': endpoint_name,
                 'workspace_id': workspace_id,
                 'object_type': 'vectorSearchEndpoint',
-                'object_name': endpoint.name,
+                'object_name': endpoint_name,
                 'object_path': None,
                 'owner_email': owner_email,
                 'permissions': permissions,
@@ -1962,51 +2094,51 @@ def discover_metastores(client, workspace_id: str) -> List[Dict[str, Any]]:
 
 # COMMAND ----------
 
-def get_genie_space_permissions(space_id: str) -> List[Any]:
+def get_genie_space_permissions(client, space_id: str) -> tuple:
     """
-    Get permissions for a Genie space using the REST API.
-    Uses dbutils to get the API token and workspace host.
+    Get permissions for a Genie space using the permissions API.
+    Uses "genie" as the object type and space_id as the object_id.
+    Returns (owner_email, permissions_list)
     """
     try:
-        import requests
-        from dbruntime.databricks_repl_context import get_context
-        
-        ctx = get_context()
-        host = ctx.browserHostName
-        token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-        
-        response = requests.get(
-            f"https://{host}/api/2.0/permissions/genie-spaces/{space_id}",
-            headers={"Authorization": f"Bearer {token}"}
+        acl = client.permissions.get(
+            request_object_type="genie",
+            request_object_id=space_id
         )
         
         permissions = []
-        if response.status_code == 200:
-            data = response.json()
-            if 'access_control_list' in data:
-                for acl in data['access_control_list']:
-                    principal_email = None
+        owner_email = 'unknown'
+        
+        if acl and acl.access_control_list:
+            for ace in acl.access_control_list:
+                principal_email = None
+                principal_type = 'user'
+                
+                if ace.user_name:
+                    principal_email = ace.user_name
                     principal_type = 'user'
-                    if acl.get('user_name'):
-                        principal_email = acl.get('user_name')
-                        principal_type = 'user'
-                    elif acl.get('service_principal_name'):
-                        principal_email = acl.get('service_principal_name')
-                        principal_type = 'service_principal'
-                    elif acl.get('group_name'):
-                        principal_email = acl.get('group_name')
-                        principal_type = 'group'
-                    
-                    if principal_email and 'all_permissions' in acl:
-                        for perm in acl['all_permissions']:
-                            permissions.append(Row(
-                                principal_email=principal_email,
-                                principal_type=principal_type,
-                                permission_level=perm.get('permission_level', 'UNKNOWN')
-                            ))
-        return permissions
+                elif ace.service_principal_name:
+                    principal_email = ace.service_principal_name
+                    principal_type = 'service_principal'
+                elif ace.group_name:
+                    principal_email = ace.group_name
+                    principal_type = 'group'
+                
+                if principal_email and ace.all_permissions:
+                    for perm in ace.all_permissions:
+                        perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
+                        if perm_level == 'CAN_MANAGE' and not perm.inherited:
+                            owner_email = principal_email
+                        permissions.append(Row(
+                            principal_email=principal_email,
+                            principal_type=principal_type,
+                            permission_level=perm_level
+                        ))
+        
+        return (owner_email, permissions)
     except Exception as e:
-        return []
+        print(f"  ⚠️  Permission fetch failed for genie/{space_id}: {str(e)}")
+        return ('unknown', [])
 
 def discover_genie_spaces(client, workspace_id: str) -> List[Dict[str, Any]]:
     """Discover AI/BI Genie Spaces using genie.list_spaces API with permissions."""
@@ -2039,15 +2171,12 @@ def discover_genie_spaces(client, workspace_id: str) -> List[Dict[str, Any]]:
                 space_name = getattr(space, 'name', None) or getattr(space, 'title', None) or 'Unknown'
                 owner_email = getattr(space, 'creator_user_name', None) or 'unknown'
                 
-                # Get permissions using REST API
-                permissions = get_genie_space_permissions(str(space_id))
+                # Get permissions using the SDK permissions API with "genie" object type
+                owner_from_perms, permissions = get_genie_space_permissions(client, str(space_id))
                 
                 # Try to extract owner from permissions if not available
-                if owner_email == 'unknown':
-                    for perm in permissions:
-                        if hasattr(perm, 'permission_level') and perm.permission_level == 'CAN_MANAGE':
-                            owner_email = perm.principal_email
-                            break
+                if owner_email == 'unknown' and owner_from_perms != 'unknown':
+                    owner_email = owner_from_perms
                 
                 discovered.append({
                     'object_id': str(space_id),
