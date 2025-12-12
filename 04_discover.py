@@ -183,7 +183,7 @@ def get_permissions_safe(client, object_type: str, object_id: str, debug_sample:
 
 def get_uc_grants_safe(client, securable_type: str, full_name: str) -> tuple:
     """
-    Get Unity Catalog grants for a securable object using grants.get_effective API.
+    Get Unity Catalog grants for a securable object using grants.get API.
     Returns (owner_email, permissions_list).
     
     Args:
@@ -197,28 +197,28 @@ def get_uc_grants_safe(client, securable_type: str, full_name: str) -> tuple:
     try:
         from databricks.sdk.service.catalog import SecurableType
         
-        # Map string to SecurableType enum
+        # Map string to SecurableType enum - use .value for the API call
         securable_type_map = {
-            'CATALOG': SecurableType.CATALOG,
-            'SCHEMA': SecurableType.SCHEMA,
-            'TABLE': SecurableType.TABLE,
-            'VOLUME': SecurableType.VOLUME,
-            'FUNCTION': SecurableType.FUNCTION,
-            'REGISTERED_MODEL': SecurableType.FUNCTION,  # Models use FUNCTION type
-            'EXTERNAL_LOCATION': SecurableType.EXTERNAL_LOCATION,
-            'STORAGE_CREDENTIAL': SecurableType.STORAGE_CREDENTIAL,
-            'CONNECTION': SecurableType.CONNECTION,
-            'SHARE': SecurableType.SHARE,
-            'RECIPIENT': SecurableType.RECIPIENT,
-            'PROVIDER': SecurableType.PROVIDER,
-            'METASTORE': SecurableType.METASTORE,
+            'CATALOG': SecurableType.CATALOG.value,
+            'SCHEMA': SecurableType.SCHEMA.value,
+            'TABLE': SecurableType.TABLE.value,
+            'VOLUME': SecurableType.VOLUME.value,
+            'FUNCTION': SecurableType.FUNCTION.value,
+            'REGISTERED_MODEL': SecurableType.FUNCTION.value,  # Models use FUNCTION type
+            'EXTERNAL_LOCATION': SecurableType.EXTERNAL_LOCATION.value,
+            'STORAGE_CREDENTIAL': SecurableType.STORAGE_CREDENTIAL.value,
+            'CONNECTION': SecurableType.CONNECTION.value,
+            'SHARE': SecurableType.SHARE.value,
+            'RECIPIENT': SecurableType.RECIPIENT.value,
+            'PROVIDER': SecurableType.PROVIDER.value,
+            'METASTORE': SecurableType.METASTORE.value,
         }
         
         sec_type = securable_type_map.get(securable_type.upper())
         if not sec_type:
             return ('unknown', [])
         
-        grants = client.grants.get_effective(securable_type=sec_type, full_name=full_name)
+        grants = client.grants.get(securable_type=sec_type, full_name=full_name)
         
         acl_list = []
         owner_email = 'unknown'
@@ -961,15 +961,19 @@ def discover_monitors(client, workspace_id: str) -> List[Dict[str, Any]]:
         monitor_count = 0
         for catalog_info in client.catalogs.list():
             catalog_name = catalog_info.name
-            # Skip system catalogs
-            if catalog_name.startswith('system'):
+            
+            # Skip excluded catalogs
+            if catalog_name in EXCLUDED_CATALOGS:
                 continue
+            
             try:
                 for schema_info in client.schemas.list(catalog_name=catalog_name):
                     schema_name = schema_info.name
-                    # Skip information_schema
-                    if schema_name == 'information_schema':
+                    
+                    # Skip excluded schemas
+                    if schema_name in EXCLUDED_SCHEMAS:
                         continue
+                    
                     try:
                         for table in client.tables.list(catalog_name=catalog_name, schema_name=schema_name):
                             full_name = f"{catalog_name}.{schema_name}.{table.name}"
@@ -982,10 +986,10 @@ def discover_monitors(client, workspace_id: str) -> List[Dict[str, Any]]:
                                     permissions = []
                                     owner_email = 'unknown'
                                     
-                                    # Get table grants for monitor permissions
+                                    # Get table grants for monitor permissions (use .value)
                                     try:
                                         grants = client.grants.get(
-                                            securable_type=SecurableType.TABLE,
+                                            securable_type=SecurableType.TABLE.value,
                                             full_name=full_name
                                         )
                                         if grants and grants.privilege_assignments:
@@ -1307,11 +1311,11 @@ def discover_registered_models(client, workspace_id: str) -> List[Dict[str, Any]
             
             owner_email = model.owner if hasattr(model, 'owner') and model.owner else 'unknown'
             
-            # Get UC grants for the model using FUNCTION securable type
+            # Get UC grants for the model using FUNCTION securable type value
             permissions = []
             try:
                 grants = client.grants.get(
-                    securable_type=SecurableType.FUNCTION,
+                    securable_type=SecurableType.FUNCTION.value,
                     full_name=full_name
                 )
                 if grants and grants.privilege_assignments:
@@ -1464,6 +1468,13 @@ def discover_vector_search_endpoints(client, workspace_id: str) -> List[Dict[str
 
 # COMMAND ----------
 
+# Catalogs to exclude from discovery
+EXCLUDED_CATALOGS = {'__databricks_internal', 'samples', 'system'}
+
+# Schemas to exclude from discovery
+EXCLUDED_SCHEMAS = {'information_schema'}
+
+
 def discover_catalogs(client, workspace_id: str) -> List[Dict[str, Any]]:
     """Discover all Unity Catalog catalogs with grants."""
     print("Discovering Unity Catalog catalogs...")
@@ -1471,18 +1482,24 @@ def discover_catalogs(client, workspace_id: str) -> List[Dict[str, Any]]:
     
     try:
         for catalog_info in client.catalogs.list():
+            catalog_name = catalog_info.name
+            
+            # Skip excluded catalogs
+            if catalog_name in EXCLUDED_CATALOGS:
+                continue
+            
             owner_email = catalog_info.owner if hasattr(catalog_info, 'owner') and catalog_info.owner else 'unknown'
             
             # Get UC grants for the catalog
-            owner_from_grants, permissions = get_uc_grants_safe(client, 'CATALOG', catalog_info.name)
+            owner_from_grants, permissions = get_uc_grants_safe(client, 'CATALOG', catalog_name)
             if owner_email == 'unknown' and owner_from_grants != 'unknown':
                 owner_email = owner_from_grants
             
             discovered.append({
-                'object_id': catalog_info.name,
+                'object_id': catalog_name,
                 'workspace_id': workspace_id,
                 'object_type': 'catalog',
-                'object_name': catalog_info.name,
+                'object_name': catalog_name,
                 'object_path': None,
                 'owner_email': owner_email,
                 'permissions': permissions,
@@ -1512,9 +1529,20 @@ def discover_schemas(client, workspace_id: str) -> List[Dict[str, Any]]:
     try:
         for catalog_info in client.catalogs.list():
             catalog_name = catalog_info.name
+            
+            # Skip excluded catalogs
+            if catalog_name in EXCLUDED_CATALOGS:
+                continue
+            
             try:
                 for schema_info in client.schemas.list(catalog_name=catalog_name):
-                    full_name = f"{catalog_name}.{schema_info.name}"
+                    schema_name = schema_info.name
+                    
+                    # Skip excluded schemas
+                    if schema_name in EXCLUDED_SCHEMAS:
+                        continue
+                    
+                    full_name = f"{catalog_name}.{schema_name}"
                     owner_email = schema_info.owner if hasattr(schema_info, 'owner') and schema_info.owner else 'unknown'
                     
                     # Get UC grants for the schema
@@ -1526,7 +1554,7 @@ def discover_schemas(client, workspace_id: str) -> List[Dict[str, Any]]:
                         'object_id': full_name,
                         'workspace_id': workspace_id,
                         'object_type': 'schema',
-                        'object_name': schema_info.name,
+                        'object_name': schema_name,
                         'object_path': full_name,
                         'owner_email': owner_email,
                         'permissions': permissions,
@@ -1557,9 +1585,19 @@ def discover_volumes(client, workspace_id: str) -> List[Dict[str, Any]]:
     try:
         for catalog_info in client.catalogs.list():
             catalog_name = catalog_info.name
+            
+            # Skip excluded catalogs
+            if catalog_name in EXCLUDED_CATALOGS:
+                continue
+            
             try:
                 for schema_info in client.schemas.list(catalog_name=catalog_name):
                     schema_name = schema_info.name
+                    
+                    # Skip excluded schemas
+                    if schema_name in EXCLUDED_SCHEMAS:
+                        continue
+                    
                     try:
                         for volume in client.volumes.list(
                             catalog_name=catalog_name,
@@ -1643,52 +1681,100 @@ def discover_connections(client, workspace_id: str) -> List[Dict[str, Any]]:
 
 # COMMAND ----------
 
-def discover_tables(client, workspace_id: str) -> List[Dict[str, Any]]:
-    """Discover all Unity Catalog tables with grants."""
-    print("Discovering Unity Catalog tables...")
+def discover_tables(client, workspace_id: str, max_workers: int = 10) -> List[Dict[str, Any]]:
+    """
+    Discover all Unity Catalog tables with grants.
+    Uses parallel processing for better performance with large numbers of tables.
+    
+    Args:
+        client: WorkspaceClient instance
+        workspace_id: The workspace ID
+        max_workers: Maximum number of parallel workers for table discovery (default: 10)
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+    
+    print(f"Discovering Unity Catalog tables (max_workers={max_workers})...")
     discovered = []
+    discovered_lock = threading.Lock()
+    
+    def process_table(table_info: tuple) -> Dict[str, Any]:
+        """Process a single table and return its discovery record."""
+        catalog_name, schema_name, table = table_info
+        full_name = f"{catalog_name}.{schema_name}.{table.name}"
+        owner_email = table.owner if hasattr(table, 'owner') and table.owner else 'unknown'
+        
+        # Get UC grants for the table
+        owner_from_grants, permissions = get_uc_grants_safe(client, 'TABLE', full_name)
+        if owner_email == 'unknown' and owner_from_grants != 'unknown':
+            owner_email = owner_from_grants
+        
+        return {
+            'object_id': full_name,
+            'workspace_id': workspace_id,
+            'object_type': 'table',
+            'object_name': table.name,
+            'object_path': full_name,
+            'owner_email': owner_email,
+            'permissions': permissions,
+            'metadata': {
+                'catalog': catalog_name,
+                'schema': schema_name,
+                'table_type': table.table_type.value if hasattr(table, 'table_type') and table.table_type else 'MANAGED',
+                'created_at': str(table.created_at) if hasattr(table, 'created_at') else ''
+            },
+            'is_active': True,
+            'created_at': datetime.utcnow(),
+            'updated_at': datetime.utcnow()
+        }
     
     try:
+        # First, collect all tables to process
+        tables_to_process = []
+        
         for catalog_info in client.catalogs.list():
             catalog_name = catalog_info.name
+            
+            # Skip excluded catalogs
+            if catalog_name in EXCLUDED_CATALOGS:
+                continue
+            
             try:
                 for schema_info in client.schemas.list(catalog_name=catalog_name):
                     schema_name = schema_info.name
+                    
+                    # Skip excluded schemas
+                    if schema_name in EXCLUDED_SCHEMAS:
+                        continue
+                    
                     try:
                         for table in client.tables.list(
                             catalog_name=catalog_name,
                             schema_name=schema_name
                         ):
-                            full_name = f"{catalog_name}.{schema_name}.{table.name}"
-                            owner_email = table.owner if hasattr(table, 'owner') and table.owner else 'unknown'
-                            
-                            # Get UC grants for the table
-                            owner_from_grants, permissions = get_uc_grants_safe(client, 'TABLE', full_name)
-                            if owner_email == 'unknown' and owner_from_grants != 'unknown':
-                                owner_email = owner_from_grants
-                            
-                            discovered.append({
-                                'object_id': full_name,
-                                'workspace_id': workspace_id,
-                                'object_type': 'table',
-                                'object_name': table.name,
-                                'object_path': full_name,
-                                'owner_email': owner_email,
-                                'permissions': permissions,
-                                'metadata': {
-                                    'catalog': catalog_name,
-                                    'schema': schema_name,
-                                    'table_type': table.table_type.value if hasattr(table, 'table_type') and table.table_type else 'MANAGED',
-                                    'created_at': str(table.created_at) if hasattr(table, 'created_at') else ''
-                                },
-                                'is_active': True,
-                                'created_at': datetime.utcnow(),
-                                'updated_at': datetime.utcnow()
-                            })
+                            tables_to_process.append((catalog_name, schema_name, table))
                     except Exception as table_error:
                         pass  # Skip schemas without table access
             except Exception as schema_error:
                 pass  # Skip catalogs without schema access
+        
+        print(f"  Found {len(tables_to_process)} tables to process...")
+        
+        # Process tables in parallel
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_table, table_info): table_info for table_info in tables_to_process}
+            
+            completed = 0
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    with discovered_lock:
+                        discovered.append(result)
+                    completed += 1
+                    if completed % 100 == 0:
+                        print(f"    Processed {completed}/{len(tables_to_process)} tables...")
+                except Exception as e:
+                    pass  # Skip failed tables
         
         print(f"✓ Discovered {len(discovered)} tables")
     except Exception as e:
@@ -1706,9 +1792,19 @@ def discover_functions(client, workspace_id: str) -> List[Dict[str, Any]]:
     try:
         for catalog_info in client.catalogs.list():
             catalog_name = catalog_info.name
+            
+            # Skip excluded catalogs
+            if catalog_name in EXCLUDED_CATALOGS:
+                continue
+            
             try:
                 for schema_info in client.schemas.list(catalog_name=catalog_name):
                     schema_name = schema_info.name
+                    
+                    # Skip excluded schemas
+                    if schema_name in EXCLUDED_SCHEMAS:
+                        continue
+                    
                     try:
                         for func in client.functions.list(
                             catalog_name=catalog_name,
