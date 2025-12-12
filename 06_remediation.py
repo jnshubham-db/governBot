@@ -908,14 +908,19 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
         }
         
         # Map object type to permissions API object type (for workspace objects)
+        # Supported types: alerts, alertsv2, apps, authorization, clusters, cluster-policies,
+        # dashboards, database-instances, database-projects, dbsql-dashboards, directories,
+        # experiments, files, genie, instance-pools, jobs, notebooks, pipelines, queries,
+        # registered-models, repos, serving-endpoints, warehouses, vector-search-endpoints
         workspace_type_mapping = {
             # Workspace objects
             "notebook": "notebooks",
-            "dashboard": "sql/dashboards",  # Legacy SQL dashboards use sql/dashboards
-            "lakeview_dashboard": "dashboards",  # Lakeview dashboards - note: may not support permissions API
-            "query": "sql/queries",  # Legacy SQL queries use sql/queries
+            "dashboard": "dbsql-dashboards",  # Legacy SQL dashboards
+            "lakeview_dashboard": "dashboards",  # Lakeview (AI/BI) dashboards
+            "query": "queries",
             "folder": "directories",
             "directory": "directories",
+            "file": "files",
             "repo": "repos",
             "workspace_object": "directories",  # Generic workspace object
             # Compute
@@ -928,21 +933,19 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
             "pipelines": "pipelines",
             "pipeline": "pipelines",
             # SQL
-            "warehouse": "sql/warehouses",
-            "alert": "sql/alerts",  # Legacy SQL alerts
+            "warehouse": "warehouses",  # Fixed: was sql/warehouses
+            "alert": "alerts",  # Fixed: was sql/alerts
             # Apps & Serving
             "apps": "apps",
             "servingEndpoint": "serving-endpoints",
-            # Feature Store
-            "featureTable": "feature-tables",
             # Model Registry (workspace-level)
             "registeredModel": "registered-models",
             # Vector Search
             "vectorSearchEndpoint": "vector-search-endpoints",
             # MLflow
-            "mlflowExperiments": "mlflow-experiments",  # Fixed: was "experiments"
-            # Secrets (uses different API)
-            "secretScope": "secrets/scopes",
+            "mlflowExperiments": "experiments",
+            # Genie
+            "genieSpace": "genie",
         }
         
         # Check if this is a Unity Catalog object

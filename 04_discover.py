@@ -375,13 +375,19 @@ def discover_workspace_objects(client, workspace_id: str, use_selective_filter: 
         return type_mapping.get(obj_type_value, obj_type_value.lower())
     
     def get_permissions_type(obj_type_value: str) -> str:
-        """Get the permission type string for API calls."""
+        """Get the permission type string for API calls.
+        
+        Supported types: alerts, alertsv2, apps, authorization, clusters, cluster-policies,
+        dashboards, database-instances, database-projects, dbsql-dashboards, directories,
+        experiments, files, genie, instance-pools, jobs, notebooks, pipelines, queries,
+        registered-models, repos, serving-endpoints, warehouses, vector-search-endpoints
+        """
         type_mapping = {
             'NOTEBOOK': 'notebooks',
             'DIRECTORY': 'directories',
             'REPO': 'repos',
             'FILE': 'files',
-            'LIBRARY': 'libraries'
+            'LIBRARY': 'files'  # Libraries use 'files' permission type (no 'libraries' type)
         }
         return type_mapping.get(obj_type_value, obj_type_value.lower())
     
@@ -594,20 +600,45 @@ def discover_dashboards(client, workspace_id: str) -> List[Dict[str, Any]]:
     try:
         lakeview_count = 0
         for dashboard in client.lakeview.list():
-            # Lakeview dashboards don't support standard permissions API
             # Extract owner from dashboard metadata
             owner_email = 'unknown'
             if hasattr(dashboard, 'creator_user_name') and dashboard.creator_user_name:
                 owner_email = dashboard.creator_user_name
             
+            # Lakeview dashboards use "dashboards" permission type with dashboard_id
+            # Try to get permissions using the dashboard_id
+            permissions = []
+            dashboard_id = dashboard.dashboard_id
+            dashboard_path = dashboard.path if hasattr(dashboard, 'path') else None
+            
+            # Try getting permissions using the dashboards permission type
+            try:
+                owner_from_perms, permissions = get_permissions_safe(client, "dashboards", dashboard_id)
+                if owner_email == 'unknown' and owner_from_perms != 'unknown':
+                    owner_email = owner_from_perms
+            except Exception:
+                pass
+            
+            # If no permissions found and we have a path, try getting workspace object permissions
+            if not permissions and dashboard_path:
+                try:
+                    # Get the workspace object ID for this path
+                    ws_obj = client.workspace.get_status(dashboard_path)
+                    if ws_obj and ws_obj.object_id:
+                        owner_from_perms, permissions = get_permissions_safe(client, "directories", str(ws_obj.object_id))
+                        if owner_email == 'unknown' and owner_from_perms != 'unknown':
+                            owner_email = owner_from_perms
+                except Exception:
+                    pass
+            
             discovered.append({
-                'object_id': dashboard.dashboard_id,
+                'object_id': dashboard_id,
                 'workspace_id': workspace_id,
                 'object_type': 'lakeview_dashboard',
                 'object_name': dashboard.display_name or 'Untitled Dashboard',
-                'object_path': dashboard.path if hasattr(dashboard, 'path') else None,
+                'object_path': dashboard_path,
                 'owner_email': owner_email,
-                'permissions': [],  # Lakeview dashboards use workspace object permissions
+                'permissions': permissions,
                 'metadata': {
                     'lifecycle_state': dashboard.lifecycle_state.value if hasattr(dashboard, 'lifecycle_state') and dashboard.lifecycle_state else 'UNKNOWN',
                     'create_time': str(dashboard.create_time) if hasattr(dashboard, 'create_time') else ''
@@ -627,10 +658,10 @@ def discover_dashboards(client, workspace_id: str) -> List[Dict[str, Any]]:
     # Discover legacy SQL dashboards using the legacy API
     try:
         legacy_count = 0
-        # The legacy dashboards API uses sql/dashboards for permissions
+        # Legacy SQL dashboards use "dbsql-dashboards" for permissions API
         for dashboard in client.dashboards.list():
-            # Use sql/dashboards for permission type (legacy SQL dashboards)
-            owner_email, permissions = get_permissions_safe(client, "sql/dashboards", dashboard.id)
+            # Use dbsql-dashboards for permission type (legacy SQL dashboards)
+            owner_email, permissions = get_permissions_safe(client, "dbsql-dashboards", dashboard.id)
             # Prefer the owner from dashboard.user if available
             if hasattr(dashboard, 'user') and dashboard.user and hasattr(dashboard.user, 'email'):
                 owner_email = dashboard.user.email
@@ -873,8 +904,8 @@ def discover_mlflow_experiments(client, workspace_id: str) -> List[Dict[str, Any
     
     try:
         for experiment in client.experiments.list_experiments():
-            # Use "mlflow-experiments" for permission type (not "experiments")
-            owner_email, permissions = get_permissions_safe(client, "mlflow-experiments", experiment.experiment_id)
+            # Use "experiments" for permission type (the API expects "experiments", not "mlflow-experiments")
+            owner_email, permissions = get_permissions_safe(client, "experiments", experiment.experiment_id)
             
             discovered.append({
                 'object_id': experiment.experiment_id,
@@ -977,19 +1008,32 @@ def discover_alerts(client, workspace_id: str) -> List[Dict[str, Any]]:
     try:
         for alert in client.alerts.list():
             owner_email = 'unknown'
+            # Try different owner attributes based on SDK version
             if hasattr(alert, 'user') and alert.user and hasattr(alert.user, 'email'):
                 owner_email = alert.user.email
+            elif hasattr(alert, 'owner_user_name') and alert.owner_user_name:
+                owner_email = alert.owner_user_name
+            
+            # Get alert ID - could be 'id' or 'alert_id' depending on SDK version
+            alert_id = getattr(alert, 'id', None) or getattr(alert, 'alert_id', None)
+            if not alert_id:
+                continue
             
             # Fetch permissions for the alert
-            owner_from_perms, permissions = get_permissions_safe(client, "alerts", alert.id)
+            owner_from_perms, permissions = get_permissions_safe(client, "alerts", str(alert_id))
             if owner_email == 'unknown' and owner_from_perms != 'unknown':
                 owner_email = owner_from_perms
             
+            # Get alert name - try different attributes
+            alert_name = (getattr(alert, 'name', None) or 
+                         getattr(alert, 'display_name', None) or 
+                         'Unnamed Alert')
+            
             discovered.append({
-                'object_id': alert.id,
+                'object_id': str(alert_id),
                 'workspace_id': workspace_id,
                 'object_type': 'alert',
-                'object_name': alert.name or 'Unnamed Alert',
+                'object_name': alert_name,
                 'object_path': None,
                 'owner_email': owner_email,
                 'permissions': permissions,
@@ -1017,7 +1061,7 @@ def discover_warehouses(client, workspace_id: str) -> List[Dict[str, Any]]:
     
     try:
         for warehouse in client.warehouses.list():
-            owner_email, permissions = get_permissions_safe(client, "sql/warehouses", warehouse.id)
+            owner_email, permissions = get_permissions_safe(client, "warehouses", warehouse.id)
             if hasattr(warehouse, 'creator_name') and warehouse.creator_name:
                 owner_email = warehouse.creator_name
             
@@ -1123,20 +1167,45 @@ def discover_serving_endpoints(client, workspace_id: str) -> List[Dict[str, Any]
     
     try:
         for endpoint in client.serving_endpoints.list():
-            owner_email, permissions = get_permissions_safe(client, "serving-endpoints", endpoint.name)
+            # Skip foundation model endpoints (databricks-* endpoints) - they don't support permissions API
+            # These are managed by Databricks and not user-created
+            endpoint_name = endpoint.name
+            if endpoint_name.startswith('databricks-'):
+                # Skip foundation model endpoints, they don't have traditional permissions
+                continue
+            
+            # Get owner first from endpoint metadata
+            owner_email = 'unknown'
             if hasattr(endpoint, 'creator') and endpoint.creator:
                 owner_email = endpoint.creator
             
+            # Try to get permissions - some endpoints may not support it
+            permissions = []
+            try:
+                owner_from_perms, permissions = get_permissions_safe(client, "serving-endpoints", endpoint_name)
+                if owner_email == 'unknown' and owner_from_perms != 'unknown':
+                    owner_email = owner_from_perms
+            except Exception:
+                pass  # Silently skip permission errors for endpoints
+            
+            # Get state safely
+            state_str = 'UNKNOWN'
+            if hasattr(endpoint, 'state') and endpoint.state:
+                if hasattr(endpoint.state, 'config_update') and endpoint.state.config_update:
+                    state_str = endpoint.state.config_update.value if hasattr(endpoint.state.config_update, 'value') else str(endpoint.state.config_update)
+                elif hasattr(endpoint.state, 'ready') and endpoint.state.ready:
+                    state_str = endpoint.state.ready.value if hasattr(endpoint.state.ready, 'value') else str(endpoint.state.ready)
+            
             discovered.append({
-                'object_id': endpoint.name,
+                'object_id': endpoint_name,
                 'workspace_id': workspace_id,
                 'object_type': 'servingEndpoint',
-                'object_name': endpoint.name,
+                'object_name': endpoint_name,
                 'object_path': None,
                 'owner_email': owner_email,
                 'permissions': permissions,
                 'metadata': {
-                    'state': endpoint.state.config_update.value if hasattr(endpoint, 'state') and endpoint.state else 'UNKNOWN',
+                    'state': state_str,
                     'creation_timestamp': str(endpoint.creation_timestamp) if hasattr(endpoint, 'creation_timestamp') else ''
                 },
                 'is_active': True,
@@ -1945,27 +2014,43 @@ def discover_genie_spaces(client, workspace_id: str) -> List[Dict[str, Any]]:
     print(f"  Discovering Genie Spaces...")
     
     try:
+        # Check if genie API is available
+        if not hasattr(client, 'genie'):
+            print(f"  ⚠ Genie API not available in SDK")
+            return discovered
+        
         # Use the correct API: genie.list_spaces()
-        spaces = list(client.genie.list_spaces())
+        # The response is a GenieListSpacesResponse object, need to access .spaces attribute
+        response = client.genie.list_spaces()
+        
+        # Handle different SDK versions - could be iterator, list, or response object
+        spaces = []
+        if hasattr(response, 'spaces'):
+            spaces = response.spaces or []
+        elif hasattr(response, '__iter__'):
+            spaces = list(response)
+        else:
+            print(f"  ⚠ Unexpected Genie API response format")
+            return discovered
         
         for space in spaces:
             try:
-                space_id = getattr(space, 'space_id', str(space.id) if hasattr(space, 'id') else 'unknown')
-                space_name = getattr(space, 'name', getattr(space, 'title', 'Unknown'))
-                owner_email = getattr(space, 'creator_user_name', 'unknown')
+                space_id = getattr(space, 'space_id', None) or getattr(space, 'id', None) or 'unknown'
+                space_name = getattr(space, 'name', None) or getattr(space, 'title', None) or 'Unknown'
+                owner_email = getattr(space, 'creator_user_name', None) or 'unknown'
                 
                 # Get permissions using REST API
-                permissions = get_genie_space_permissions(space_id)
+                permissions = get_genie_space_permissions(str(space_id))
                 
                 # Try to extract owner from permissions if not available
                 if owner_email == 'unknown':
                     for perm in permissions:
-                        if perm.permission_level == 'CAN_MANAGE':
+                        if hasattr(perm, 'permission_level') and perm.permission_level == 'CAN_MANAGE':
                             owner_email = perm.principal_email
                             break
                 
                 discovered.append({
-                    'object_id': space_id,
+                    'object_id': str(space_id),
                     'workspace_id': workspace_id,
                     'object_type': 'genieSpace',
                     'object_name': space_name,
@@ -1981,8 +2066,8 @@ def discover_genie_spaces(client, workspace_id: str) -> List[Dict[str, Any]]:
                 print(f"    Warning: Error processing Genie space: {str(e)}")
         
         print(f"  ✓ Discovered {len(discovered)} Genie Spaces")
-    except AttributeError:
-        print(f"  ⚠ Genie API not available in SDK")
+    except AttributeError as ae:
+        print(f"  ⚠ Genie API not available in SDK: {str(ae)}")
     except Exception as e:
         print(f"  ✗ Error discovering Genie Spaces: {str(e)}")
     
