@@ -129,12 +129,13 @@ CREATE TABLE IF NOT EXISTS {preapproved_identities_table} (
     display_name STRING,
     can_manage_resources BOOLEAN,
     can_manage_permissions BOOLEAN,
+    approved_actions ARRAY<STRING>,
     is_active BOOLEAN,
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 )
 USING DELTA
-COMMENT 'Pre-approved identities (users, groups, service principals) with granular permission flags for resource management and permission management'
+COMMENT 'Pre-approved identities with granular permission flags. approved_actions specifies which object types the identity can create (e.g., ["table", "schema"] or ["ALL"] for all objects)'
 """)
 
 print(f"✓ Created table: {preapproved_identities_table}")

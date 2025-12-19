@@ -116,18 +116,20 @@ print(f"  - Delete filters: {len(delete_filters)}")
 
 # COMMAND ----------
 
-# Load pre-approved identities with permission flags
+# Load pre-approved identities with permission flags and approved_actions
 preapproved_identities_df = spark.sql(f"""
     SELECT 
         identity_name,
         identity_type,
         COALESCE(can_manage_resources, true) as can_manage_resources,
-        COALESCE(can_manage_permissions, false) as can_manage_permissions
+        COALESCE(can_manage_permissions, false) as can_manage_permissions,
+        COALESCE(approved_actions, ARRAY('ALL')) as approved_actions
     FROM {catalog}.{schema}.governance_preapproved_identities
     WHERE is_active = true
 """)
 
 # Separate by type AND permission flags
+# Also track approved_actions per identity for granular object-type filtering
 resource_approved_users = []
 resource_approved_service_principals = []
 resource_approved_groups = []
@@ -136,11 +138,19 @@ permission_approved_users = []
 permission_approved_service_principals = []
 permission_approved_groups = []
 
+# Dictionary to track approved_actions per identity
+# Key: identity_name, Value: list of approved object types
+identity_approved_actions: Dict[str, List[str]] = {}
+
 for row in preapproved_identities_df.collect():
     identity_name = row.identity_name
     identity_type = row.identity_type
     can_manage_resources = row.can_manage_resources
     can_manage_permissions = row.can_manage_permissions
+    approved_actions = list(row.approved_actions) if row.approved_actions else ['ALL']
+    
+    # Store approved_actions for this identity
+    identity_approved_actions[identity_name] = approved_actions
     
     if identity_type == 'USER':
         if can_manage_resources:
@@ -168,6 +178,13 @@ print(f"  - Users: {len(permission_approved_users)}")
 print(f"  - Service Principals: {len(permission_approved_service_principals)}")
 print(f"  - Groups: {len(permission_approved_groups)}")
 
+# Show identities with restricted approved_actions (not ALL)
+restricted_identities = {k: v for k, v in identity_approved_actions.items() if 'ALL' not in v}
+if restricted_identities:
+    print(f"\nIdentities with RESTRICTED approved_actions (not ALL):")
+    for identity, actions in restricted_identities.items():
+        print(f"  - {identity}: {actions}")
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -193,8 +210,11 @@ def resolve_member_identity(client, member_id):
     
     return (None, None)
 
-def expand_group_members(group_names: List[str], client) -> Tuple[List[str], List[str]]:
-    """Expand group names to get member users and service principals."""
+def expand_group_members(group_names: List[str], client, identity_approved_actions: Dict[str, List[str]]) -> Tuple[List[str], List[str]]:
+    """
+    Expand group names to get member users and service principals.
+    Also inherits approved_actions from parent group to expanded members.
+    """
     expanded_users = []
     expanded_sps = []
     
@@ -203,6 +223,9 @@ def expand_group_members(group_names: List[str], client) -> Tuple[List[str], Lis
     
     print(f"\nExpanding {len(group_names)} group(s)...")    
     for group_name in group_names:
+        # Get the group's approved_actions to inherit to members
+        group_approved_actions = identity_approved_actions.get(group_name, ['ALL'])
+        
         try:
             group_members = client.groups.list(filter=f"displayName eq '{group_name}'")
             
@@ -219,6 +242,18 @@ def expand_group_members(group_names: List[str], client) -> Tuple[List[str], Lis
                                         identity_name, identity_type = resolve_member_identity(client, member_id)
                                         
                                         if identity_name:
+                                            # Inherit approved_actions from group
+                                            # If member already has approved_actions, merge them
+                                            if identity_name in identity_approved_actions:
+                                                existing = identity_approved_actions[identity_name]
+                                                if 'ALL' not in existing:
+                                                    # Merge group's approved_actions with existing
+                                                    merged = list(set(existing + group_approved_actions))
+                                                    identity_approved_actions[identity_name] = merged
+                                            else:
+                                                # New member - inherit group's approved_actions
+                                                identity_approved_actions[identity_name] = group_approved_actions
+                                            
                                             if identity_type == 'user':
                                                 expanded_users.append(identity_name)
                                             elif identity_type == 'sp':
@@ -232,11 +267,11 @@ def expand_group_members(group_names: List[str], client) -> Tuple[List[str], Lis
     
     return list(set(expanded_users)), list(set(expanded_sps))
 
-# Expand groups for resource management
-resource_expanded_users, resource_expanded_sps = expand_group_members(resource_approved_groups, client)
+# Expand groups for resource management (also updates identity_approved_actions)
+resource_expanded_users, resource_expanded_sps = expand_group_members(resource_approved_groups, client, identity_approved_actions)
 
-# Expand groups for permission management
-permission_expanded_users, permission_expanded_sps = expand_group_members(permission_approved_groups, client)
+# Expand groups for permission management (also updates identity_approved_actions)
+permission_expanded_users, permission_expanded_sps = expand_group_members(permission_approved_groups, client, identity_approved_actions)
 
 print(f"\nExpanded from groups for RESOURCE management:")
 print(f"  - Users: {len(resource_expanded_users)}")
@@ -269,16 +304,31 @@ all_permission_approved_identities = list(set(
     permission_expanded_sps
 ))
 
+# Separate identities into those with ALL approved_actions vs restricted approved_actions
+# Identities with ALL can be filtered at SQL level; restricted ones need Python-level filtering
+resource_identities_with_all = []  # Can create ANY object type
+resource_identities_with_restrictions = {}  # Can only create specific object types
+
+for identity in all_resource_approved_identities:
+    actions = identity_approved_actions.get(identity, ['ALL'])
+    if 'ALL' in actions:
+        resource_identities_with_all.append(identity)
+    else:
+        resource_identities_with_restrictions[identity] = actions
+
 print(f"\nTotal approved identities for RESOURCE management: {len(all_resource_approved_identities)}")
+print(f"  - With ALL permissions (excluded at SQL level): {len(resource_identities_with_all)}")
+print(f"  - With RESTRICTED permissions (filtered in Python): {len(resource_identities_with_restrictions)}")
 print(f"Total approved identities for PERMISSION management: {len(all_permission_approved_identities)}")
 
-# Build identity filter strings (escape single quotes to prevent SQL injection)
-if not all_resource_approved_identities:
-    print("WARNING: No approved identities for resource management. All creation/deletion events will be flagged.")
+# Build identity filter strings for SQL (only for identities with ALL)
+# Identities with restrictions will be included in query results and filtered later
+if not resource_identities_with_all:
+    print("WARNING: No approved identities with ALL permissions. All creation/deletion events will be queried.")
     resource_approved_identities_str = ""
 else:
     # Escape single quotes in identity names for SQL safety
-    escaped_resource_identities = [id.replace("'", "''") for id in all_resource_approved_identities]
+    escaped_resource_identities = [id.replace("'", "''") for id in resource_identities_with_all]
     resource_approved_identities_str = "', '".join(escaped_resource_identities)
 
 if not all_permission_approved_identities:
@@ -288,6 +338,12 @@ else:
     # Escape single quotes in identity names for SQL safety
     escaped_permission_identities = [id.replace("'", "''") for id in all_permission_approved_identities]
     permission_approved_identities_str = "', '".join(escaped_permission_identities)
+
+# Print restricted identities for visibility
+if resource_identities_with_restrictions:
+    print("\nIdentities with RESTRICTED object type permissions:")
+    for identity, actions in resource_identities_with_restrictions.items():
+        print(f"  - {identity}: can create [{', '.join(actions)}]")
 
 # COMMAND ----------
 
@@ -465,8 +521,53 @@ if create_query:
         (col("user_email") != "System-User")
     )
     
+    # Phase 2: Apply approved_actions filtering for identities with restrictions
+    # Using native Spark operations (no UDF) for better performance
+    if resource_identities_with_restrictions:
+        print(f"\nApplying approved_actions filter for {len(resource_identities_with_restrictions)} restricted identities...")
+        
+        # Create a DataFrame of allowed (identity, object_type) pairs
+        # This represents what each restricted identity IS allowed to create
+        allowed_pairs = []
+        for identity, actions in resource_identities_with_restrictions.items():
+            for action in actions:
+                # Store both original case and lowercase for matching
+                allowed_pairs.append((identity, action.lower()))
+        
+        # Create DataFrame with allowed combinations
+        allowed_df = spark.createDataFrame(
+            allowed_pairs, 
+            ["allowed_identity", "allowed_object_type"]
+        )
+        
+        # Add lowercase object_type column for case-insensitive matching
+        create_events_with_lower = create_events_parsed_df.withColumn(
+            "object_type_lower", lower(col("object_type"))
+        )
+        
+        # Left anti-join to find violations:
+        # - Events from restricted identities where (user_email, object_type) is NOT in allowed pairs
+        # - Events from unapproved identities (no match in restrictions) remain as violations
+        
+        # First, identify events from restricted identities that ARE allowed (to exclude them)
+        allowed_events = create_events_with_lower.join(
+            allowed_df,
+            (create_events_with_lower["user_email"] == allowed_df["allowed_identity"]) &
+            (create_events_with_lower["object_type_lower"] == allowed_df["allowed_object_type"]),
+            "inner"
+        ).select(create_events_with_lower["event_id"])
+        
+        # Exclude allowed events - remaining events are violations
+        create_events_parsed_df = create_events_with_lower.join(
+            allowed_events,
+            on="event_id",
+            how="left_anti"
+        ).drop("object_type_lower")
+        
+        print(f"After approved_actions filtering: {create_events_parsed_df.count()} events remain as violations")
+    
     create_events_count = create_events_parsed_df.count()
-    print(f"Found {create_events_count} create events by unauthorized identities")
+    print(f"Found {create_events_count} create events by unauthorized identities (after approved_actions check)")
     create_events_parsed_df.display()
 else:
     create_events_parsed_df = None
@@ -766,6 +867,8 @@ print(f"  - Direct Service Principals:    {len(resource_approved_service_princip
 print(f"  - Groups:                       {len(resource_approved_groups)}")
 print(f"  - Users from Groups:            {len(resource_expanded_users)}")
 print(f"  - SPs from Groups:              {len(resource_expanded_sps)}")
+print(f"  - With ALL permissions:         {len(resource_identities_with_all)}")
+print(f"  - With RESTRICTED permissions:  {len(resource_identities_with_restrictions)}")
 print(f"\nApproved Identities for PERMISSION Management: {len(all_permission_approved_identities)}")
 print(f"  - Direct Users:                 {len(permission_approved_users)}")
 print(f"  - Direct Service Principals:    {len(permission_approved_service_principals)}")

@@ -185,17 +185,60 @@ The **Databricks Governance Automation System** (GovernBot) is a comprehensive s
     "name": "admin@example.com",
     "type": "USER",                    # USER, GROUP, or SERVICE_PRINCIPAL
     "can_manage_resources": True,      # Can create/delete resources
-    "can_manage_permissions": True     # Can modify permissions
+    "can_manage_permissions": True,    # Can modify permissions
+    "approved_actions": ["ALL"]        # Object types this identity can create
 }
 ```
 
 **Permission Flags Explained**:
 - `can_manage_resources`: Allows creating/deleting jobs, pipelines, apps, experiments, monitors, etc.
 - `can_manage_permissions`: Allows granting/revoking permissions (ACL changes)
+- `approved_actions`: Specifies which object types the identity can create (granular control)
+
+**Approved Actions Options**:
+| Value | Description |
+|-------|-------------|
+| `["ALL"]` | Can create any object type (default, backward compatible) |
+| `["table", "schema", "volume"]` | Can only create specific object types |
+| `["UC_DATA_OBJECTS"]` | Group alias - expands to catalog, schema, table, volume, function |
+| `["COMPUTE"]` | Group alias - expands to cluster, clusterPolicy, instancePool, warehouse |
+| `["ML_AI"]` | Group alias - expands to ML/AI related objects |
+
+**Group Aliases (Expand Automatically)**:
+| Alias | Expands To |
+|-------|------------|
+| `ALL` | All object types (wildcard) |
+| `UC_DATA_OBJECTS` | catalog, schema, table, volume, function |
+| `UC_SECURITY` | storageCredential, externalLocation, connection |
+| `UC_ALL` | All Unity Catalog objects |
+| `COMPUTE` | cluster, clusterPolicy, instancePool, warehouse |
+| `ML_AI` | mlflowExperiments, servingEndpoint, registeredModel, featureSpec, featureTable, ucRegisteredModel |
+| `DATA_SHARING` | share, recipient, provider |
+| `DASHBOARDS_BI` | dashboard, genieSpace, alert, query |
+| `ORCHESTRATION` | jobs, pipelines |
+
+**Example Use Cases**:
+```python
+# Admin - can create anything
+{"name": "admin@example.com", "type": "USER", "can_manage_resources": True, 
+ "can_manage_permissions": True, "approved_actions": ["ALL"]}
+
+# Data Engineer - can only create UC data objects (tables, schemas, volumes)
+{"name": "data.engineer@example.com", "type": "USER", "can_manage_resources": True, 
+ "can_manage_permissions": False, "approved_actions": ["UC_DATA_OBJECTS"]}
+
+# ML Engineer - can only create ML/AI objects
+{"name": "ml.engineer@example.com", "type": "USER", "can_manage_resources": True, 
+ "can_manage_permissions": False, "approved_actions": ["ML_AI"]}
+
+# Analyst - can only create dashboards and queries
+{"name": "analyst@example.com", "type": "USER", "can_manage_resources": True, 
+ "can_manage_permissions": False, "approved_actions": ["dashboard", "query", "alert"]}
+```
 
 **Supported Identity Types**:
 - `USER`: Individual user emails
-- `GROUP`: Databricks workspace groups (members are expanded automatically)
+- `GROUP`: Databricks workspace groups (members are expanded automatically and inherit group's approved_actions)
 - `SERVICE_PRINCIPAL`: Service principal application IDs (UUID format)
 
 ---
@@ -838,11 +881,17 @@ CREATE TABLE governance_preapproved_identities (
     display_name STRING,
     can_manage_resources BOOLEAN,
     can_manage_permissions BOOLEAN,
+    approved_actions ARRAY<STRING>,  -- Object types this identity can create, e.g., ['table', 'schema'] or ['ALL']
     is_active BOOLEAN,
     created_at TIMESTAMP,
     updated_at TIMESTAMP
 )
 ```
+
+**approved_actions Column Values**:
+- `['ALL']`: Can create any object type (default for backward compatibility)
+- `['table', 'schema', 'volume']`: Can only create specific object types listed
+- Group aliases like `['UC_DATA_OBJECTS']` are expanded at load time to individual object types
 
 ### B. Filter Expression Examples
 

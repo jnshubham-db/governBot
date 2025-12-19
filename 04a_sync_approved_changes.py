@@ -281,31 +281,61 @@ workspace_ids_str = "', '".join([str(wid) for wid in enabled_workspace_ids])
 
 # COMMAND ----------
 
-# Load pre-approved identities that can manage resources
+# Load pre-approved identities that can manage resources (including approved_actions)
 preapproved_identities_df = spark.sql(f"""
     SELECT 
         identity_name,
         identity_type,
         COALESCE(can_manage_resources, true) as can_manage_resources,
-        COALESCE(can_manage_permissions, false) as can_manage_permissions
+        COALESCE(can_manage_permissions, false) as can_manage_permissions,
+        COALESCE(approved_actions, ARRAY('ALL')) as approved_actions
     FROM {catalog}.{schema}.governance_preapproved_identities
     WHERE is_active = true
 """)
 
-# Build lists of approved identities
+# Build lists of approved identities and track approved_actions per identity
 resource_approved_identities = []
 permission_approved_identities = []
 
+# Dictionary to track approved_actions per identity
+# Key: identity_name, Value: list of approved object types
+identity_approved_actions: Dict[str, List[str]] = {}
+
 for row in preapproved_identities_df.collect():
+    identity_name = row.identity_name
+    approved_actions = list(row.approved_actions) if row.approved_actions else ['ALL']
+    
+    # Store approved_actions for this identity
+    identity_approved_actions[identity_name] = approved_actions
+    
     if row.can_manage_resources:
-        resource_approved_identities.append(row.identity_name)
+        resource_approved_identities.append(identity_name)
     if row.can_manage_permissions:
-        permission_approved_identities.append(row.identity_name)
+        permission_approved_identities.append(identity_name)
+
+# Separate identities with ALL vs restricted approved_actions
+resource_identities_with_all = []
+resource_identities_with_restrictions: Dict[str, List[str]] = {}
+
+for identity in resource_approved_identities:
+    actions = identity_approved_actions.get(identity, ['ALL'])
+    if 'ALL' in actions:
+        resource_identities_with_all.append(identity)
+    else:
+        resource_identities_with_restrictions[identity] = actions
 
 print(f"Approved identities for RESOURCE management: {len(resource_approved_identities)}")
+print(f"  - With ALL permissions: {len(resource_identities_with_all)}")
+print(f"  - With RESTRICTED permissions: {len(resource_identities_with_restrictions)}")
 print(f"Approved identities for PERMISSION management: {len(permission_approved_identities)}")
 
-# Build SQL-safe identity strings
+# Print restricted identities for visibility
+if resource_identities_with_restrictions:
+    print("\nIdentities with RESTRICTED approved_actions:")
+    for identity, actions in resource_identities_with_restrictions.items():
+        print(f"  - {identity}: can create [{', '.join(actions)}]")
+
+# Build SQL-safe identity strings (include ALL resource approved identities for querying)
 if resource_approved_identities:
     escaped_resource_ids = [id.replace("'", "''") for id in resource_approved_identities]
     resource_ids_str = "', '".join(escaped_resource_ids)
@@ -446,6 +476,7 @@ def build_approved_user_query(
 # COMMAND ----------
 
 creations_synced = 0
+creations_filtered_by_actions = 0
 
 if sync_creations and resource_ids_str:
     print("="*80)
@@ -469,8 +500,66 @@ if sync_creations and resource_ids_str:
             (col("object_id").isNotNull())
         )
         
+        initial_count = valid_creates_df.count()
+        print(f"Found {initial_count} creation events by approved users")
+        
+        # Apply approved_actions filtering - only sync objects that match the user's allowed object types
+        # For users with restricted approved_actions, filter to only their allowed object types
+        if resource_identities_with_restrictions:
+            print(f"\nApplying approved_actions filter for {len(resource_identities_with_restrictions)} restricted identities...")
+            
+            # Create a DataFrame of allowed (identity, object_type) pairs
+            allowed_pairs = []
+            for identity, actions in resource_identities_with_restrictions.items():
+                for action in actions:
+                    allowed_pairs.append((identity, action.lower()))
+            
+            # Create DataFrame with allowed combinations
+            allowed_df = spark.createDataFrame(
+                allowed_pairs, 
+                ["allowed_identity", "allowed_object_type"]
+            )
+            
+            # Add lowercase object_type column for case-insensitive matching
+            valid_creates_with_lower = valid_creates_df.withColumn(
+                "object_type_lower", lower(col("object_type"))
+            )
+            
+            # Split events into two groups:
+            # 1. Events from users with ALL permissions - always sync
+            # 2. Events from users with restrictions - only sync if object_type matches
+            
+            # Get list of restricted user emails for filtering
+            restricted_users = list(resource_identities_with_restrictions.keys())
+            
+            # Events from users with ALL permissions (always sync)
+            events_from_all_users = valid_creates_with_lower.filter(
+                ~col("user_email").isin(restricted_users)
+            )
+            
+            # Events from restricted users that match their allowed object types
+            events_from_restricted_users = valid_creates_with_lower.filter(
+                col("user_email").isin(restricted_users)
+            )
+            
+            # Join restricted user events with allowed pairs to find valid ones
+            valid_restricted_events = events_from_restricted_users.join(
+                allowed_df,
+                (events_from_restricted_users["user_email"] == allowed_df["allowed_identity"]) &
+                (events_from_restricted_users["object_type_lower"] == allowed_df["allowed_object_type"]),
+                "inner"
+            ).drop("allowed_identity", "allowed_object_type")
+            
+            # Combine both sets
+            valid_creates_df = events_from_all_users.unionByName(valid_restricted_events).drop("object_type_lower")
+            
+            filtered_count = valid_creates_df.count()
+            creations_filtered_by_actions = initial_count - filtered_count
+            print(f"After approved_actions filtering: {filtered_count} events to sync")
+            print(f"Filtered out {creations_filtered_by_actions} events (object type not in user's approved_actions)")
+        
         create_count = valid_creates_df.count()
-        print(f"Found {create_count} creation events by approved users")
+        print(f"Total creation events to sync: {create_count}")
         
         if create_count > 0:
             # Check which objects are NOT already in pre-approved objects
@@ -724,12 +813,15 @@ print(f"Lookback Period:          {lookback_hours} hours")
 print(f"Workspaces Monitored:     {len(enabled_workspace_ids)}")
 print(f"\nApproved Identities:")
 print(f"  - Resource Management:  {len(resource_approved_identities)}")
+print(f"    - With ALL permissions:      {len(resource_identities_with_all)}")
+print(f"    - With RESTRICTED permissions: {len(resource_identities_with_restrictions)}")
 print(f"  - Permission Management: {len(permission_approved_identities)}")
 print(f"\nSync Results:")
-print(f"  - New Creations Synced:     {creations_synced}")
-print(f"  - Permission Changes Found: {permissions_synced}")
-print(f"  - Permissions Updated:      {permissions_updated}")
-print(f"  - New Objects Added:        {permissions_added}")
+print(f"  - New Creations Synced:         {creations_synced}")
+print(f"  - Creations Filtered (by actions): {creations_filtered_by_actions}")
+print(f"  - Permission Changes Found:     {permissions_synced}")
+print(f"  - Permissions Updated:          {permissions_updated}")
+print(f"  - New Objects Added:            {permissions_added}")
 print("="*80)
 
 # Show current state of pre-approved objects
@@ -754,6 +846,7 @@ display(summary_df)
 dbutils.notebook.exit(json.dumps({
     'status': 'SUCCESS',
     'creations_synced': creations_synced,
+    'creations_filtered_by_actions': creations_filtered_by_actions,
     'permissions_synced': permissions_synced,
     'permissions_updated': permissions_updated,
     'permissions_added': permissions_added,

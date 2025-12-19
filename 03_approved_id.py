@@ -36,19 +36,61 @@ print(f"Schema: {schema}")
 # MAGIC - **name**: email for users, group name for groups, SP name for service principals
 # MAGIC - **can_manage_resources**: True if identity can create/delete resources (jobs, pipelines, apps, etc.)
 # MAGIC - **can_manage_permissions**: True if identity can grant/revoke permissions (changeWorkspaceAcl)
+# MAGIC - **approved_actions**: List of object types this identity can create. Options:
+# MAGIC   - `["ALL"]` - Can create any object type (default if not specified)
+# MAGIC   - `["table", "schema", "volume"]` - Can only create specific object types
+# MAGIC   - Group aliases: `["UC_DATA_OBJECTS"]`, `["COMPUTE"]`, `["ML_AI"]`, etc.
+# MAGIC
+# MAGIC **Supported Object Types:**
+# MAGIC - Dashboard/BI: `dashboard`, `genieSpace`, `alert`, `query`
+# MAGIC - Compute: `cluster`, `clusterPolicy`, `instancePool`, `warehouse`
+# MAGIC - Orchestration: `jobs`, `pipelines`
+# MAGIC - Apps: `apps`
+# MAGIC - ML/AI: `mlflowExperiments`, `servingEndpoint`, `registeredModel`, `featureSpec`, `featureTable`
+# MAGIC - Secrets: `secretScope`
+# MAGIC - Vector Search: `vectorSearchEndpoint`, `vectorIndex`
+# MAGIC - Clean Rooms: `cleanRoom`
+# MAGIC - Unity Catalog: `catalog`, `schema`, `table`, `volume`, `function`, `connection`, `externalLocation`, `storageCredential`, `ucRegisteredModel`, `ucModelVersion`, `abacPolicy`
+# MAGIC - Delta Sharing: `recipient`, `share`, `provider`
+# MAGIC - Monitors: `monitors`
+# MAGIC - Workspace: `notebook`, `directory`, `repo`, `folder`
+# MAGIC
+# MAGIC **Group Aliases (expand to multiple object types):**
+# MAGIC - `ALL`: All object types (wildcard)
+# MAGIC - `UC_DATA_OBJECTS`: catalog, schema, table, volume, function
+# MAGIC - `UC_SECURITY`: storageCredential, externalLocation, connection
+# MAGIC - `UC_ALL`: All Unity Catalog objects
+# MAGIC - `COMPUTE`: cluster, clusterPolicy, instancePool, warehouse
+# MAGIC - `ML_AI`: mlflowExperiments, servingEndpoint, registeredModel, featureSpec, featureTable, ucRegisteredModel
+# MAGIC - `DATA_SHARING`: share, recipient, provider
 # MAGIC
 # MAGIC **Note:** An identity can have both flags set to True if they are authorized for both actions.
 
 # COMMAND ----------
 
 # **UPDATE THIS LIST WITH APPROVED IDENTITIES**
-# Each identity has two permission flags:
-#   - can_manage_resources: Can create/delete jobs, pipelines, apps, experiments, monitors
-#   - can_manage_permissions: Can grant/revoke permissions (changeWorkspaceAcl)
+# Each identity has the following permission flags:
+#   - can_manage_resources: Can create/delete resources (True/False)
+#   - can_manage_permissions: Can grant/revoke permissions (True/False)
+#   - approved_actions: List of object types this identity can create
+#     - ["ALL"] = can create any object type (default behavior)
+#     - ["table", "schema"] = can only create specific object types
+#     - ["UC_DATA_OBJECTS"] = can create Unity Catalog data objects (table, schema, volume, etc.)
 approved_identities = [
-    # Users (email addresses)
-    # Admin can do both - manage resources AND manage permissions
-    {"name": "sashank.kotta@databricks.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": True},
+    # Admin user - can create ALL objects and manage permissions
+    {"name": "sashank.kotta@databricks.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": True, "approved_actions": ["ALL"]},
+    
+    # Example: Data Engineer - can only create UC data objects (tables, schemas, volumes, functions)
+    # {"name": "data.engineer@example.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": False, "approved_actions": ["UC_DATA_OBJECTS"]},
+    
+    # Example: ML Engineer - can only create ML/AI objects
+    # {"name": "ml.engineer@example.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": False, "approved_actions": ["ML_AI"]},
+    
+    # Example: Analytics user - can only create dashboards and queries
+    # {"name": "analyst@example.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": False, "approved_actions": ["dashboard", "query", "alert"]},
+    
+    # Example: DevOps - can only create compute resources
+    # {"name": "devops@example.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": False, "approved_actions": ["COMPUTE", "jobs", "pipelines"]},
 ]
 
 print(f"Number of approved identities: {len(approved_identities)}")
@@ -56,7 +98,10 @@ print("\nApproved identities:")
 for identity in approved_identities:
     res_flag = "✓" if identity.get('can_manage_resources', False) else "✗"
     perm_flag = "✓" if identity.get('can_manage_permissions', False) else "✗"
-    print(f"  - {identity['type']:20s}: {identity['name']:40s} [Resources: {res_flag}] [Permissions: {perm_flag}]")
+    actions = identity.get('approved_actions', ['ALL'])
+    actions_str = ", ".join(actions) if actions else "ALL"
+    print(f"  - {identity['type']:20s}: {identity['name']:40s}")
+    print(f"      [Resources: {res_flag}] [Permissions: {perm_flag}] [Actions: {actions_str}]")
 
 # COMMAND ----------
 
@@ -69,6 +114,41 @@ from datetime import datetime
 from typing import List, Dict, Any
 from pyspark.sql.types import *
 
+# Group alias expansions - map group names to their constituent object types
+APPROVED_ACTION_GROUPS = {
+    'ALL': ['ALL'],  # Special wildcard - handled separately in watcher
+    'UC_DATA_OBJECTS': ['catalog', 'schema', 'table', 'volume', 'function'],
+    'UC_SECURITY': ['storageCredential', 'externalLocation', 'connection'],
+    'UC_ALL': ['catalog', 'schema', 'table', 'volume', 'function', 'connection', 
+               'externalLocation', 'storageCredential', 'ucRegisteredModel', 'ucModelVersion', 
+               'abacPolicy', 'recipient', 'share', 'provider'],
+    'COMPUTE': ['cluster', 'clusterPolicy', 'instancePool', 'warehouse'],
+    'ML_AI': ['mlflowExperiments', 'servingEndpoint', 'registeredModel', 'featureSpec', 
+              'featureTable', 'ucRegisteredModel'],
+    'DATA_SHARING': ['share', 'recipient', 'provider'],
+    'DASHBOARDS_BI': ['dashboard', 'genieSpace', 'alert', 'query'],
+    'ORCHESTRATION': ['jobs', 'pipelines'],
+    'SECRETS': ['secretScope'],
+    'VECTOR_SEARCH': ['vectorSearchEndpoint', 'vectorIndex'],
+}
+
+def expand_approved_actions(actions: List[str]) -> List[str]:
+    """Expand group aliases in approved_actions to individual object types."""
+    if not actions:
+        return ['ALL']  # Default to ALL if not specified
+    
+    expanded = []
+    for action in actions:
+        action_upper = action.upper()
+        if action_upper in APPROVED_ACTION_GROUPS:
+            # It's a group alias - expand it
+            expanded.extend(APPROVED_ACTION_GROUPS[action_upper])
+        else:
+            # It's an individual object type
+            expanded.append(action)
+    
+    return list(set(expanded))  # Remove duplicates
+
 def prepare_identity_records(identities: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     """Prepare identity records for insertion."""
     records = []
@@ -80,6 +160,10 @@ def prepare_identity_records(identities: List[Dict[str, str]]) -> List[Dict[str,
         # Get permission flags with defaults (backward compatible - default to True for resources)
         can_manage_resources = identity.get('can_manage_resources', True)
         can_manage_permissions = identity.get('can_manage_permissions', False)
+        # Get approved_actions with default to ALL (backward compatible)
+        approved_actions_raw = identity.get('approved_actions', ['ALL'])
+        # Expand any group aliases
+        approved_actions = expand_approved_actions(approved_actions_raw)
         
         # Extract display name (simple extraction from email or use as-is)
         if identity_type == 'USER' and '@' in identity_name:
@@ -93,6 +177,7 @@ def prepare_identity_records(identities: List[Dict[str, str]]) -> List[Dict[str,
             'display_name': display_name,
             'can_manage_resources': can_manage_resources,
             'can_manage_permissions': can_manage_permissions,
+            'approved_actions': approved_actions,
             'is_active': True,
             'created_at': current_time,
             'updated_at': current_time
@@ -118,6 +203,7 @@ if identity_records:
         StructField('display_name', StringType(), True),
         StructField('can_manage_resources', BooleanType(), True),
         StructField('can_manage_permissions', BooleanType(), True),
+        StructField('approved_actions', ArrayType(StringType()), True),
         StructField('is_active', BooleanType(), True),
         StructField('created_at', TimestampType(), True),
         StructField('updated_at', TimestampType(), True)
@@ -142,6 +228,7 @@ if identity_records:
                 display_name = source.display_name,
                 can_manage_resources = source.can_manage_resources,
                 can_manage_permissions = source.can_manage_permissions,
+                approved_actions = source.approved_actions,
                 updated_at = source.updated_at
         WHEN NOT MATCHED THEN INSERT *
     """)
@@ -178,6 +265,7 @@ all_identities_df = spark.sql(f"""
         display_name,
         can_manage_resources,
         can_manage_permissions,
+        approved_actions,
         is_active,
         created_at,
         updated_at
@@ -203,6 +291,10 @@ print(f"""
 The following identities are now approved with granular permissions:
 - can_manage_resources: Can create/delete jobs, pipelines, apps, experiments, monitors
 - can_manage_permissions: Can grant/revoke permissions (changeWorkspaceAcl)
+- approved_actions: List of specific object types the identity can create
+  - ["ALL"] = can create any object (default, backward compatible)
+  - ["table", "schema"] = can only create specific object types
+  - Group aliases expand automatically (UC_DATA_OBJECTS, COMPUTE, ML_AI, etc.)
 
 Supported Identity Types:
 - USER: Individual users (email addresses)
@@ -211,7 +303,7 @@ Supported Identity Types:
 
 To add more identities:
 1. Update the approved_identities list in this notebook
-2. Add entries with 'name', 'type', 'can_manage_resources', and 'can_manage_permissions' fields
+2. Add entries with 'name', 'type', 'can_manage_resources', 'can_manage_permissions', and 'approved_actions' fields
 3. Re-run the notebook
 
 To deactivate an identity:
@@ -219,16 +311,17 @@ To deactivate an identity:
         SET is_active = false, updated_at = current_timestamp()
         WHERE identity_name = 'name' AND identity_type = 'TYPE'
 
-To update permission flags:
+To update permission flags or approved actions:
 - Run: UPDATE {table_name}
         SET can_manage_resources = true/false,
             can_manage_permissions = true/false,
+            approved_actions = ARRAY('table', 'schema', 'volume'),
             updated_at = current_timestamp()
         WHERE identity_name = 'name' AND identity_type = 'TYPE'
         
-Example - grant permission management to a user:
+Example - allow a user to only create tables and schemas:
   UPDATE {table_name}
-  SET can_manage_permissions = true, updated_at = current_timestamp()
+  SET approved_actions = ARRAY('table', 'schema'), updated_at = current_timestamp()
   WHERE identity_name = 'user@example.com' AND identity_type = 'USER'
 """)
 
