@@ -72,6 +72,7 @@ from pyspark.sql.types import *
 from pyspark.sql import Row
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+from databricks.sdk.service.compute import ClusterSource, ListClustersFilterBy
 
 # Initialize workspace client
 client = WorkspaceClient()
@@ -748,7 +749,7 @@ def discover_clusters(client, workspace_id: str) -> List[Dict[str, Any]]:
     discovered = []
     
     try:
-        for cluster in client.clusters.list():
+        for cluster in client.clusters.list(filter_by=ListClustersFilterBy([ClusterSource.UI, ClusterSource.API])):
             owner_email, permissions = get_permissions_safe(client, "clusters", cluster.cluster_id)
             # Prefer the owner from cluster.creator_user_name if available
             if cluster.creator_user_name:

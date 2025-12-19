@@ -907,6 +907,9 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
             "provider", "metastore", "ucRegisteredModel"
         }
         
+        # Secret scope uses a dedicated secrets.list_acls / secrets.put_acl API
+        secret_scope_types = {"secretScope"}
+        
         # Map object type to permissions API object type (for workspace objects)
         # Supported types: alerts, alertsv2, apps, authorization, clusters, cluster-policies,
         # dashboards, database-instances, database-projects, dbsql-dashboards, directories,
@@ -950,6 +953,7 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
         
         # Check if this is a Unity Catalog object
         is_uc_object = object_type in uc_object_types
+        is_secret_scope = object_type in secret_scope_types
         
         # Get approved permissions from preapproved objects table
         print(f"  → Checking for pre-approved permissions in governance table")
@@ -964,6 +968,9 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
         if is_uc_object:
             # Handle Unity Catalog objects using grants API
             return _revert_uc_permissions(client, object_id, object_type, approved_perms)
+        elif is_secret_scope:
+            # Handle secret scopes using secrets.list_acls / secrets.put_acl / secrets.delete_acl API
+            return _revert_secret_scope_permissions(client, object_id, approved_perms)
         else:
             # Handle workspace objects using permissions API
             return _revert_workspace_permissions(client, object_id, object_type, approved_perms, workspace_type_mapping)
@@ -1170,6 +1177,132 @@ def _revert_uc_permissions(client, object_id: str, object_type: str, approved_pe
         return (False, "Unity Catalog SDK components not available")
     except Exception as e:
         return (False, f"UC permission revert failed: {str(e)}")
+
+
+def _revert_secret_scope_permissions(client, scope_name: str, approved_perms) -> Tuple[bool, Optional[str]]:
+    """
+    Revert secret scope ACL permissions using secrets API.
+    
+    Secret scopes use a different API:
+    - client.secrets.list_acls(scope=scope_name) - list current ACLs
+    - client.secrets.put_acl(scope=scope_name, principal=..., permission=...) - set ACL
+    - client.secrets.delete_acl(scope=scope_name, principal=...) - remove ACL
+    
+    This function:
+    1. Gets current ACLs from the secret scope
+    2. Compares with pre-approved ACLs from governance table  
+    3. Deletes ACLs not in approved list
+    4. Adds ACLs that are in approved but not current
+    """
+    try:
+        from databricks.sdk.service.workspace import AclPermission
+        
+        # Get current ACLs from the secret scope
+        try:
+            current_acls = list(client.secrets.list_acls(scope=scope_name))
+        except Exception as get_error:
+            return (False, f"Failed to get current secret scope ACLs: {str(get_error)}")
+        
+        # Build a map of current ACLs: {principal: permission}
+        current_acls_map = {}
+        owner_principal = None
+        
+        for acl in current_acls:
+            principal = acl.principal if hasattr(acl, 'principal') else None
+            permission = acl.permission.value if hasattr(acl, 'permission') and hasattr(acl.permission, 'value') else str(acl.permission)
+            
+            if principal:
+                current_acls_map[principal] = permission
+                # Track the owner (MANAGE permission typically indicates ownership)
+                if permission == 'MANAGE':
+                    owner_principal = principal
+        
+        print(f"  → Current secret scope ACLs: {len(current_acls_map)} principals")
+        
+        if not approved_perms or not approved_perms[0].permissions:
+            # No approved permissions - revoke all ACLs except owner
+            print(f"  → No pre-approved permissions found for secret scope")
+            print(f"  → Revoking all explicit ACLs (keeping owner with MANAGE)")
+            
+            revoked_count = 0
+            for principal, permission in current_acls_map.items():
+                # Skip owner - can't revoke MANAGE from owner
+                if permission == 'MANAGE' and principal == owner_principal:
+                    print(f"    - Skipping owner: {principal}")
+                    continue
+                
+                # Delete ACL for this principal
+                try:
+                    client.secrets.delete_acl(scope=scope_name, principal=principal)
+                    revoked_count += 1
+                    print(f"    - Revoked ACL for: {principal} (was {permission})")
+                except Exception as revoke_error:
+                    print(f"    - Warning: Failed to revoke from {principal}: {str(revoke_error)}")
+            
+            return (True, f"Revoked ACLs from {revoked_count} principals (owner retained)")
+        
+        # Pre-approved permissions found - sync to approved state
+        print(f"  → Pre-approved permissions found for secret scope")
+        print(f"  → Syncing to pre-approved ACL state")
+        
+        # Build a map of approved ACLs: {principal: permission}
+        approved_acls_map = {}
+        permissions_list = approved_perms[0].permissions
+        
+        for perm in permissions_list:
+            principal = perm['principal_email']
+            permission = perm['permission_level']
+            approved_acls_map[principal] = permission
+        
+        print(f"  → Approved ACLs: {len(approved_acls_map)} principals")
+        
+        # Step 1: Update or add ACLs to match approved state
+        updated_count = 0
+        added_count = 0
+        
+        for principal, approved_permission in approved_acls_map.items():
+            current_permission = current_acls_map.get(principal)
+            
+            if current_permission != approved_permission:
+                try:
+                    # Put ACL (overwrites existing if present, creates if not)
+                    client.secrets.put_acl(
+                        scope=scope_name, 
+                        principal=principal, 
+                        permission=AclPermission(approved_permission)
+                    )
+                    if current_permission:
+                        updated_count += 1
+                        print(f"    - Updated {principal}: {current_permission} → {approved_permission}")
+                    else:
+                        added_count += 1
+                        print(f"    - Added {principal}: {approved_permission}")
+                except Exception as put_error:
+                    print(f"    - Warning: Failed to set ACL for {principal}: {str(put_error)}")
+        
+        # Step 2: Remove ACLs that are in current but not in approved (except owner)
+        removed_count = 0
+        for principal in current_acls_map.keys():
+            if principal not in approved_acls_map:
+                # Skip owner
+                if current_acls_map[principal] == 'MANAGE' and principal == owner_principal:
+                    print(f"    - Skipping owner removal: {principal}")
+                    continue
+                
+                try:
+                    client.secrets.delete_acl(scope=scope_name, principal=principal)
+                    removed_count += 1
+                    print(f"    - Removed unapproved principal: {principal}")
+                except Exception as remove_error:
+                    print(f"    - Warning: Failed to remove {principal}: {str(remove_error)}")
+        
+        summary = f"Synced secret scope ACLs: updated {updated_count}, added {added_count}, removed {removed_count}"
+        return (True, summary)
+        
+    except ImportError:
+        return (False, "Secrets SDK components not available")
+    except Exception as e:
+        return (False, f"Secret scope permission revert failed: {str(e)}")
 
 
 def _revert_workspace_permissions(client, object_id: str, object_type: str, approved_perms, type_mapping: dict) -> Tuple[bool, Optional[str]]:

@@ -196,6 +196,10 @@ acl_filters_raw = [
     # Vector Search Endpoint ACL
     ["vector_endpoint_acl_change", "vectorSearch", "changeEndpointAcl", "vectorSearchEndpoint", "request_params.request_object_id", "request_params.request_object_id", "REVERT_PERMISSION", {}, True, "Vector Search Endpoint ACL change"],
     
+    # Secret Scope ACL - putAcl and deleteAcl operations both require permission revert
+    ["secret_scope_acl_put", "secrets", "putAcl", "secretScope", "request_params.scope", "request_params.scope", "REVERT_PERMISSION", {"principal": "request_params.principal", "permission": "request_params.permission"}, True, "Secret Scope ACL put/change"],
+    ["secret_scope_acl_delete", "secrets", "deleteAcl", "secretScope", "request_params.scope", "request_params.scope", "REVERT_PERMISSION", {"principal": "request_params.principal"}, True, "Secret Scope ACL deletion"],
+    
     # Workspace ACL - object_type determined dynamically from resource path using CASE WHEN
     ["workspace_acl_change", "workspace", "changeWorkspaceAcl", 
      """CASE 
@@ -294,7 +298,7 @@ delete_filters_raw = [
     ["repo_delete", "notebook", "deleteRepo", "repo", "request_params.path", "request_params.path", "REPORT_DELETION", {}, True, "Repo deletion"],
     
     # Secrets
-    ["secret_acl_delete", "secrets", "deleteAcl", "secretACL", "request_params.scope", "request_params.scope", "REPORT_DELETION", {}, True, "Secret ACL deletion"],
+    # Note: Secret scope ACL changes (putAcl, deleteAcl) are handled in ACL filters with REVERT_PERMISSION
     ["secret_scope_delete", "secrets", "deleteScope", "secretScope", "request_params.scope", "request_params.scope", "REPORT_DELETION", {}, True, "Secret Scope deletion"],
     ["secret_delete", "secrets", "deleteSecret", "secret", "request_params.scope", "request_params.scope", "REPORT_DELETION", {"key": "request_params.key"}, True, "Secret deletion"],
     

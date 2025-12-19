@@ -430,6 +430,7 @@ def build_audit_query_from_filters(
         response 
     FROM system.access.audit
     WHERE event_date >= current_date() - INTERVAL {lookback_hours} HOUR
+        AND response.status_code IN (200, 201, 203, 204, 205, 206)
         AND workspace_id IN ('{workspace_ids_str}')
         AND user_identity.email IS NOT NULL
         AND ({action_filter_sql})
