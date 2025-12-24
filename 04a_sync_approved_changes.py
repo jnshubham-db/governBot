@@ -103,8 +103,7 @@ def get_workspace_permissions(client, object_type: str, object_id: str) -> List[
     Get workspace-level permissions for an object using the permissions API.
     Returns list of {principal_email, principal_type, permission_level} dicts.
     
-    Uses the Databricks SDK permissions.get() method with positional arguments
-    to avoid parameter name issues across SDK versions.
+    Uses the same approach as 04_discover.py get_permissions_safe() function.
     """
     # Map object types to permissions API object types
     # Supported types: alerts, alertsv2, apps, authorization, clusters, cluster-policies,
@@ -138,46 +137,46 @@ def get_workspace_permissions(client, object_type: str, object_id: str) -> List[
     
     permissions_type = type_mapping.get(object_type)
     if not permissions_type:
-        print(f"    → No permissions found or object not accessible")
         return []
     
     try:
-        # Use positional arguments to avoid SDK version parameter name issues
-        # The SDK expects: permissions.get(object_type, object_id) as positional args
-        perms = client.permissions.get(permissions_type, object_id)
-        result = []
+        # Use positional arguments - same as 04_discover.py get_permissions_safe()
+        permissions = client.permissions.get(permissions_type, object_id)
+        acl_list = []
         
-        if perms and perms.access_control_list:
-            for acl in perms.access_control_list:
-                principal = None
-                principal_type = 'user'
-                
+        if permissions.access_control_list:
+            for acl in permissions.access_control_list:
+                principal_email = None
                 if acl.user_name:
-                    principal = acl.user_name
+                    principal_email = acl.user_name
+                elif acl.service_principal_name:
+                    principal_email = acl.service_principal_name
+                elif acl.group_name:
+                    # Also capture group permissions
+                    principal_email = acl.group_name
+                
+                # Determine principal type for more accurate remediation
+                principal_type = 'user'
+                if acl.user_name:
                     principal_type = 'user'
                 elif acl.service_principal_name:
-                    principal = acl.service_principal_name
                     principal_type = 'service_principal'
                 elif acl.group_name:
-                    principal = acl.group_name
                     principal_type = 'group'
                 
-                if principal and acl.all_permissions:
+                if principal_email and acl.all_permissions:
                     for perm in acl.all_permissions:
-                        perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
-                        result.append({
-                            'principal_email': principal,
+                        # Include ALL permissions (both inherited and direct)
+                        acl_list.append({
+                            'principal_email': principal_email,
                             'principal_type': principal_type,
-                            'permission_level': perm_level
+                            'permission_level': perm.permission_level.value
                         })
-        return result
+        
+        return acl_list
     except Exception as e:
-        error_msg = str(e)
-        # Check for common "not found" errors and suppress verbose output
-        if 'RESOURCE_DOES_NOT_EXIST' in error_msg or '404' in error_msg or 'does not exist' in error_msg.lower():
-            print(f"    → No permissions found or object not accessible")
-        else:
-            print(f"    Warning: Could not get permissions for {object_type}/{object_id}: {error_msg}")
+        # Silently fail for permission errors - same as 04_discover.py
+        print(f"  ⚠️  Permission fetch failed for {permissions_type}/{object_id}: {str(e)}")
         return []
 
 
@@ -185,129 +184,154 @@ def get_uc_grants(client, object_type: str, full_name: str) -> List[Dict[str, st
     """
     Get Unity Catalog grants for a securable object using grants.get API.
     Returns list of {principal_email, principal_type, permission_level} dicts.
+    
+    Uses the same approach as 04_discover.py get_uc_grants_safe() function.
     """
     try:
         from databricks.sdk.service.catalog import SecurableType
         
-        # Map object types to SecurableType enum
+        # Map object types to SecurableType enum - use .value for the API call (same as 04_discover.py)
         securable_type_map = {
-            'catalog': SecurableType.CATALOG,
-            'schema': SecurableType.SCHEMA,
-            'table': SecurableType.TABLE,
-            'volume': SecurableType.VOLUME,
-            'function': SecurableType.FUNCTION,
-            'connection': SecurableType.CONNECTION,
-            'externalLocation': SecurableType.EXTERNAL_LOCATION,
-            'storageCredential': SecurableType.STORAGE_CREDENTIAL,
-            'share': SecurableType.SHARE,
-            'recipient': SecurableType.RECIPIENT,
-            'provider': SecurableType.PROVIDER,
-            'metastore': SecurableType.METASTORE,
-            'ucRegisteredModel': SecurableType.FUNCTION,  # UC models use FUNCTION type
-            'registeredModel': SecurableType.FUNCTION,
-            'vectorIndex': SecurableType.TABLE,
-            'featureTable': SecurableType.TABLE,
-            'monitors': SecurableType.TABLE,  # Monitors use table grants
+            'catalog': SecurableType.CATALOG.value,
+            'CATALOG': SecurableType.CATALOG.value,
+            'schema': SecurableType.SCHEMA.value,
+            'SCHEMA': SecurableType.SCHEMA.value,
+            'table': SecurableType.TABLE.value,
+            'TABLE': SecurableType.TABLE.value,
+            'volume': SecurableType.VOLUME.value,
+            'VOLUME': SecurableType.VOLUME.value,
+            'function': SecurableType.FUNCTION.value,
+            'FUNCTION': SecurableType.FUNCTION.value,
+            'connection': SecurableType.CONNECTION.value,
+            'CONNECTION': SecurableType.CONNECTION.value,
+            'externalLocation': SecurableType.EXTERNAL_LOCATION.value,
+            'EXTERNAL_LOCATION': SecurableType.EXTERNAL_LOCATION.value,
+            'storageCredential': SecurableType.STORAGE_CREDENTIAL.value,
+            'STORAGE_CREDENTIAL': SecurableType.STORAGE_CREDENTIAL.value,
+            'share': SecurableType.SHARE.value,
+            'SHARE': SecurableType.SHARE.value,
+            'recipient': SecurableType.RECIPIENT.value,
+            'RECIPIENT': SecurableType.RECIPIENT.value,
+            'provider': SecurableType.PROVIDER.value,
+            'PROVIDER': SecurableType.PROVIDER.value,
+            'metastore': SecurableType.METASTORE.value,
+            'METASTORE': SecurableType.METASTORE.value,
+            'ucRegisteredModel': SecurableType.FUNCTION.value,  # UC models use FUNCTION type
+            'REGISTERED_MODEL': SecurableType.FUNCTION.value,
+            'registeredModel': SecurableType.FUNCTION.value,
+            'vectorIndex': SecurableType.TABLE.value,
+            'featureTable': SecurableType.TABLE.value,
+            'monitors': SecurableType.TABLE.value,  # Monitors use table grants
         }
         
         sec_type = securable_type_map.get(object_type)
         if not sec_type:
-            print(f"    → No permissions found or object not accessible")
             return []
         
-        # Use the SecurableType enum directly (not .value)
+        # Use grants.get with securable_type string value (same as 04_discover.py)
         grants = client.grants.get(securable_type=sec_type, full_name=full_name)
-        result = []
+        
+        acl_list = []
         
         if grants and grants.privilege_assignments:
             for assignment in grants.privilege_assignments:
                 principal = assignment.principal if hasattr(assignment, 'principal') else None
                 if principal and assignment.privileges:
-                    # Detect principal type
+                    # Determine principal type based on naming conventions
+                    # UC grants don't explicitly tell us if it's user/group/sp
                     principal_type = _detect_principal_type(principal)
                     
                     for privilege in assignment.privileges:
+                        # Handle privilege extraction - same as 04_discover.py
                         priv_name = privilege.privilege.value if hasattr(privilege.privilege, 'value') else str(privilege.privilege)
-                        result.append({
+                        
+                        acl_list.append({
                             'principal_email': principal,
                             'principal_type': principal_type,
                             'permission_level': priv_name
                         })
-        return result
+        
+        return acl_list
+        
     except Exception as e:
-        error_msg = str(e)
-        if 'RESOURCE_DOES_NOT_EXIST' in error_msg or '404' in error_msg or 'does not exist' in error_msg.lower():
-            print(f"    → No permissions found or object not accessible")
-        else:
-            print(f"    Warning: Could not get UC grants for {object_type}/{full_name}: {error_msg}")
+        # Silently fail for permission errors - same as 04_discover.py
         return []
 
 
 def get_secret_scope_acls(client, scope_name: str) -> List[Dict[str, str]]:
-    """Get secret scope ACLs using secrets.list_acls API."""
+    """
+    Get secret scope ACLs using secrets.list_acls API.
+    Returns list of {principal_email, principal_type, permission_level} dicts.
+    
+    Uses the same approach as 04_discover.py get_secret_acls_safe() function.
+    """
     try:
-        result = []
+        acl_list = []
+        
         for acl in client.secrets.list_acls(scope=scope_name):
             principal = acl.principal if hasattr(acl, 'principal') else None
             permission = acl.permission.value if hasattr(acl, 'permission') and hasattr(acl.permission, 'value') else str(acl.permission)
             
             if principal:
-                # Detect principal type
+                # Determine principal type
                 principal_type = _detect_principal_type(principal)
                 
-                result.append({
+                acl_list.append({
                     'principal_email': principal,
                     'principal_type': principal_type,
                     'permission_level': permission
                 })
-        return result
+        
+        return acl_list
     except Exception as e:
-        error_msg = str(e)
-        if 'RESOURCE_DOES_NOT_EXIST' in error_msg or '404' in error_msg or 'does not exist' in error_msg.lower():
-            print(f"    → No permissions found or object not accessible")
-        else:
-            print(f"    Warning: Could not get secret ACLs for {scope_name}: {error_msg}")
+        # Silently fail for permission errors - same as 04_discover.py
         return []
 
 
 def get_genie_space_permissions(client, space_id: str) -> List[Dict[str, str]]:
-    """Get permissions for a Genie space using SDK permissions API with 'genie' object type."""
+    """
+    Get permissions for a Genie space using the permissions API.
+    Returns list of {principal_email, principal_type, permission_level} dicts.
+    
+    Uses the same approach as 04_discover.py get_genie_space_permissions() function.
+    """
     try:
-        result = []
+        # Use keyword arguments - same as 04_discover.py
+        acl = client.permissions.get(
+            request_object_type="genie",
+            request_object_id=space_id
+        )
         
-        # Use SDK permissions API with "genie" object type - use positional args
-        perms = client.permissions.get("genie", space_id)
+        permissions = []
         
-        if perms and perms.access_control_list:
-            for acl in perms.access_control_list:
-                principal = None
+        if acl and acl.access_control_list:
+            for ace in acl.access_control_list:
+                principal_email = None
                 principal_type = 'user'
                 
-                if acl.user_name:
-                    principal = acl.user_name
+                if ace.user_name:
+                    principal_email = ace.user_name
                     principal_type = 'user'
-                elif acl.service_principal_name:
-                    principal = acl.service_principal_name
+                elif ace.service_principal_name:
+                    principal_email = ace.service_principal_name
                     principal_type = 'service_principal'
-                elif acl.group_name:
-                    principal = acl.group_name
+                elif ace.group_name:
+                    principal_email = ace.group_name
                     principal_type = 'group'
                 
-                if principal and acl.all_permissions:
-                    for perm in acl.all_permissions:
+                if principal_email and ace.all_permissions:
+                    for perm in ace.all_permissions:
                         perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
-                        result.append({
-                            'principal_email': principal,
+                        permissions.append({
+                            'principal_email': principal_email,
                             'principal_type': principal_type,
                             'permission_level': perm_level
                         })
-        return result
+        
+        return permissions
     except Exception as e:
-        error_msg = str(e)
-        if 'RESOURCE_DOES_NOT_EXIST' in error_msg or '404' in error_msg or 'does not exist' in error_msg.lower():
-            print(f"    → No permissions found or object not accessible")
-        else:
-            print(f"    Warning: Could not get Genie space permissions for {space_id}: {error_msg}")
+        # Silently fail for permission errors - same as 04_discover.py
+        print(f"  ⚠️  Permission fetch failed for genie/{space_id}: {str(e)}")
         return []
 
 
@@ -753,7 +777,8 @@ if sync_creations and resource_ids_str:
                 """)
                 
                 creations_synced = new_count
-                perm_count = sum(1 for obj in new_objects_with_permissions if obj['permissions'])
+                # Use len() with list comprehension instead of sum() to avoid conflict with pyspark.sql.functions.sum
+                perm_count = len([obj for obj in new_objects_with_permissions if obj['permissions']])
                 print(f"✓ Added {new_count} new objects to pre-approved objects table")
                 print(f"  - Objects with permissions fetched: {perm_count}")
                 
@@ -828,9 +853,13 @@ if sync_permissions and permission_ids_str:
                 if current_permissions:
                     print(f"    → Fetched {len(current_permissions)} permission entries")
                     
-                    # Convert to the format expected by the table
+                    # Convert to the format expected by the table (must include all 3 fields)
                     permissions_array = [
-                        Row(principal_email=p['principal_email'], permission_level=p['permission_level'])
+                        Row(
+                            principal_email=p['principal_email'], 
+                            principal_type=p.get('principal_type', 'user'),  # Include principal_type
+                            permission_level=p['permission_level']
+                        )
                         for p in current_permissions
                     ]
                     
