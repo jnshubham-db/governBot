@@ -727,6 +727,19 @@ if sync_creations and resource_ids_str:
                                 owner_email = perm.get('principal_email', user_email)
                                 break
                     
+                    # Convert permission dictionaries to Row objects for proper DataFrame creation
+                    # This is required for PySpark to correctly map to ArrayType(StructType([...]))
+                    permissions_array = None
+                    if permissions:
+                        permissions_array = [
+                            Row(
+                                principal_email=p['principal_email'],
+                                principal_type=p.get('principal_type', 'user'),
+                                permission_level=p['permission_level']
+                            )
+                            for p in permissions
+                        ]
+                    
                     new_objects_with_permissions.append({
                         'object_id': object_id,
                         'workspace_id': workspace_id,
@@ -734,7 +747,7 @@ if sync_creations and resource_ids_str:
                         'object_name': object_name,
                         'object_path': object_path,
                         'owner_email': owner_email,
-                        'permissions': permissions if permissions else None,
+                        'permissions': permissions_array,
                         'metadata': metadata if metadata else None,
                         'is_active': True,
                         'created_at': datetime.utcnow(),
