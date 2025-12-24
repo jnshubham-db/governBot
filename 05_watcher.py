@@ -383,10 +383,14 @@ def build_audit_query_from_filters(
     object_type_cases = []
     remediation_cases = []
     action_conditions = []
+    service_names = []
+    all_acls = []
     
     for f in filters:
         condition = f"service_name='{f.service_name}' AND action_name='{f.action_name}'"
-        
+        service_names.append(f.service_name)
+        if is_permission_change:
+            all_acls.append(f.action_name)
         # Wrap expressions with COALESCE to handle null request_params
         object_id_expr = f"COALESCE({f.object_id_expr}, 'unknown')"
         object_name_expr = f"COALESCE({f.object_name_expr}, 'unknown')"
@@ -415,28 +419,56 @@ def build_audit_query_from_filters(
         remediation_cases.append(f"WHEN {condition} THEN '{f.remediation_action}'")
         if(f.service_name == 'clusters' and f.action_name in ('create', 'createResult')):
             condition = f"""({condition}) AND
-             NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
-             AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
-            AND NOT (
-                request_params.kind='SERVERLESS_SQL_WAREHOUSE' AND request_params.cluster_creator='SQL_SERVICE'
-                    OR request_params.kind='SERVERLESS_PREVIEW' AND request_params.cluster_creator='COMPUTE_GATEWAY_LAUNCHER'
-                    OR request_params.kind='SERVERLESS_REPL_VM' AND request_params.cluster_creator='REPL_LAUNCHER'
-            )"""
+                    NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
+                    AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
+                    AND NOT (
+                        request_params.kind='SERVERLESS_SQL_WAREHOUSE' AND request_params.cluster_creator='SQL_SERVICE'
+                        OR request_params.kind='SERVERLESS_PREVIEW' AND request_params.cluster_creator='COMPUTE_GATEWAY_LAUNCHER'
+                        OR request_params.kind='SERVERLESS_REPL_VM' AND request_params.cluster_creator='REPL_LAUNCHER'
+                        )"""
         elif(f.service_name == 'clusters' and f.action_name == 'delete'):
             condition = f"""({condition} AND
-            NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
-            AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
-            )"""
+                    NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
+                    AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
+                    )"""
         elif(f.service_name == 'clusters' and f.action_name == 'changeClusterAcl'):
-            condition = f"""({condition}) AND request_params.resourceId in 
+            condition = f"""({condition}) AND request_params.resourceId IN 
                     (select distinct cluster_id from system.compute.clusters where cluster_source IN ('API','UI') 
                     and workspace_id IN ('{workspace_ids_str}'))
-            """
+                    """
         elif(f.service_name == 'jobs' and f.action_name == 'changeJobAcl'):
             condition = f"""({condition})
-            --Exclusión por asignación de Owner desde DataFactory
-            AND NOT (NVL(request_params.aclPermissionSet,'x') ='Owner' AND NVL(USER_AGENT,'x')='AzureDataFactory')
-            """
+                        --Exclusión por asignación de Owner desde DataFactory
+                        AND NOT (NVL(request_params.aclPermissionSet,'x') ='Owner' AND NVL(USER_AGENT,'x')='AzureDataFactory')
+                        AND NOT (
+                            user_identity.email = '7cdf5dcf-54d6-4a1c-ba10-7fd308054e87'
+                            AND (
+                                request_params.aclPermissionSet = 'Manage Run' AND request_params.targetUserId ='954664791769442' /*SopDWH*/
+                                OR request_params.aclPermissionSet = 'Admin' AND request_params.targetUserId = '81986449886208' /*Admin_prod*/
+                                OR request_params.aclPermissionSet = 'Admin' AND request_params.targetUserId = '41075057382951' /*AdminUsers*/
+                                OR request_params.aclPermissionSet = 'Owner' AND request_params.targetUserId = '6517422260732230' /*SPDBPRD*/
+                                OR request_params.aclPermissionSet = 'View' AND request_params.targetUserId = '83165665297392' /*BigData*/
+                                )
+                            )
+                        """
+        elif(f.service_name == 'notebook' and f.action_name == 'createNotebook') or (f.service_name == 'workspace' and f.action_name == 'createFile'):
+            condition = f"""({condition} 
+                    AND NOT (
+                        request_params.path LIKE '/Workspace/Repos/%' AND REGEXP_COUNT(request_params.path,'/') > 3
+                        OR request_params.path LIKE '/Workspace/Users/%' AND REGEXP_COUNT(request_params.path,'/') > 2
+                        OR request_params.path LIKE '/Users/%' AND REGEXP_COUNT(request_params.path,'/') >= 2
+                        OR request_params.path LIKE '/Workspace/%' AND REGEXP_COUNT(request_params.path,'/') > 2 AND NOT SPLIT_PART(request_params.path,'/',3) IN ('Users','Repos')
+                    )
+                )"""
+        elif(f.service_name == 'workspace' and f.action_name == 'fileDelete'):
+            condition = f"""({condition} 
+                    AND NOT (
+                        request_params.path LIKE '/Workspace/Repos/%' AND REGEXP_COUNT(request_params.path,'/') > 3
+                        OR request_params.path LIKE '/Workspace/Users/%' AND REGEXP_COUNT(request_params.path,'/') > 2
+                        OR request_params.path LIKE '/Users/%' AND REGEXP_COUNT(request_params.path,'/') >= 2
+                        OR request_params.path LIKE '/Workspace/%' AND REGEXP_COUNT(request_params.path,'/') > 2 AND NOT SPLIT_PART(request_params.path,'/',3) IN ('Users','Repos')
+                    )
+                )"""
         else:
             condition = f"({condition})"
 
@@ -447,11 +479,24 @@ def build_audit_query_from_filters(
     object_name_sql = "CASE \n            " + "\n            ".join(object_name_cases) + "\n            ELSE 'unknown'\n        END"
     object_type_sql = "CASE \n            " + "\n            ".join(object_type_cases) + "\n            ELSE 'unknown'\n        END"
     remediation_sql = "CASE \n            " + "\n            ".join(remediation_cases) + "\n            ELSE 'SKIP_REMEDIATION'\n        END"
-    action_filter_sql = " OR ".join(action_conditions)
+    action_filter_sql = " \n\t\t\tOR ".join(action_conditions)
+
+    excl_services_name = ','.join(list(map(lambda x: f"'{x}'", [evento for evento in set(service_names)])))
+    excl_acls = ','.join(list(map(lambda x: f"'{x}'", [acl for acl in set(all_acls)])))
+
+    default_filter = ""
+    if is_delete_event:
+        # Exclude notebook/folder/repo deletions from personal workspaces
+        default_filter = f" \n\t\t\tOR (ACTION_NAME ilike '%delete%' AND NOT SERVICE_NAME IN ({excl_services_name}))"
+    elif is_permission_change:
+        default_filter = f" \n\t\t\tOR (ACTION_NAME ilike 'change%Acl' AND NOT ACTION_NAME IN ({excl_acls}))"
+    else:
+        default_filter = f" \n\t\t\tOR (ACTION_NAME ILIKE '%create%' AND NOT SERVICE_NAME IN ({excl_services_name}))"
     
     # Build identity filter (identity_filter_str is already escaped and comma-separated)
     if identity_filter_str:
-        identity_filter = f"user_identity.email NOT IN ('{identity_filter_str}')"
+        #identity_filter = f"user_identity.email NOT IN ('{identity_filter_str}')"
+        identity_filter = f"NOT user_identity.email IN ('{identity_filter_str}')"
     else:
         identity_filter = "1=1"
     
@@ -463,9 +508,14 @@ def build_audit_query_from_filters(
         AND NOT (
             service_name = 'notebook' 
             AND action_name IN ('deleteNotebook', 'deleteFolder', 'deleteRepo')
-            AND request_params.path LIKE '/Workspace/Users/%'
+            AND (
+                request_params.path LIKE '/Workspace/Users/%'
+                or request_params.path LIKE '/Users/%'
+                --Carpetas /Workspace/FolderName/...
+                OR NOT SPLIT_PART(request_params.path,'/',3) IN ('Users','Repos') 
+                    AND NOT REGEXP_LIKE(request_params.path,'^/Workspace/[^*]+[/.?]')
+                )
         )"""
-    
     
     query = f"""
     SELECT
@@ -485,15 +535,16 @@ def build_audit_query_from_filters(
         request_params,
         response 
     FROM system.access.audit
-    WHERE event_date >= current_date() - INTERVAL {lookback_hours} HOUR
-        AND response.status_code IN (200, 201, 203, 204, 205, 206)
+    WHERE EVENT_TIME >= DATE_TRUNC('HOUR',CURRENT_TIMESTAMP()) - INTERVAL {lookback_hours} HOUR
         AND workspace_id IN ('{workspace_ids_str}')
         AND user_identity.email IS NOT NULL
-        AND ({action_filter_sql})
+        AND NVL(user_identity.email,'x') <> 'System-User'
+        AND response.status_code IN (200, 201, 202, 203, 204, 205, 206, 207, 208)
+        AND ({action_filter_sql}{default_filter})
         AND {identity_filter}{personal_workspace_exclusion}
-    ORDER BY event_time DESC
+    ORDER BY EVENT_TIME DESC
     """
-    print(query)
+    
     return query
 
 # COMMAND ----------

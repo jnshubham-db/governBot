@@ -502,22 +502,42 @@ def build_approved_user_query(
     workspace_ids_str: str,
     lookback_hours: int,
     approved_identities_str: str,
-    event_type: str = "creation"
+    is_permission_change: bool = False,
+    is_delete_event: bool = False
 ) -> str:
     """
     Build a SQL query to find events by APPROVED users (opposite of watcher).
+    Uses the same filter logic as build_audit_query_from_filters in 05_watcher.py.
+    
+    Args:
+        filters: List of filter records from governance_filters table
+        workspace_ids_str: Comma-separated workspace IDs for IN clause
+        lookback_hours: Hours to look back in audit logs
+        approved_identities_str: Comma-separated approved identity names
+        is_permission_change: Whether these are permission change events
+        is_delete_event: Whether these are delete events
+    
+    Returns:
+        SQL query string
     """
     if not filters or not approved_identities_str:
         return None
     
-    # Build CASE statements
+    # Build CASE statements for object_id, object_name, and object_type
     object_id_cases = []
     object_name_cases = []
     object_type_cases = []
     action_conditions = []
+    service_names = []
+    all_acls = []
     
     for f in filters:
         condition = f"service_name='{f.service_name}' AND action_name='{f.action_name}'"
+        service_names.append(f.service_name)
+        if is_permission_change:
+            all_acls.append(f.action_name)
+        
+        # Wrap expressions with COALESCE to handle null request_params
         object_id_expr = f"COALESCE({f.object_id_expr}, 'unknown')"
         object_name_expr = f"COALESCE({f.object_name_expr}, 'unknown')"
         
@@ -542,15 +562,101 @@ def build_approved_user_query(
             # Static string - wrap in quotes
             object_type_cases.append(f"WHEN {condition} THEN '{object_type_str}'")
         
+        # Apply custom filters per service/action - same as 05_watcher.py
+        if f.service_name == 'clusters' and f.action_name in ('create', 'createResult'):
+            condition = f"""({condition}) AND
+                    NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
+                    AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
+                    AND NOT (
+                        request_params.kind='SERVERLESS_SQL_WAREHOUSE' AND request_params.cluster_creator='SQL_SERVICE'
+                        OR request_params.kind='SERVERLESS_PREVIEW' AND request_params.cluster_creator='COMPUTE_GATEWAY_LAUNCHER'
+                        OR request_params.kind='SERVERLESS_REPL_VM' AND request_params.cluster_creator='REPL_LAUNCHER'
+                        )"""
+        elif f.service_name == 'clusters' and f.action_name == 'delete':
+            condition = f"""({condition} AND
+                    NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
+                    AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
+                    )"""
+        elif f.service_name == 'clusters' and f.action_name == 'changeClusterAcl':
+            condition = f"""({condition}) AND request_params.resourceId IN 
+                    (select distinct cluster_id from system.compute.clusters where cluster_source IN ('API','UI') 
+                    and workspace_id IN ('{workspace_ids_str}'))
+                    """
+        elif f.service_name == 'jobs' and f.action_name == 'changeJobAcl':
+            condition = f"""({condition})
+                        --Exclusión por asignación de Owner desde DataFactory
+                        AND NOT (NVL(request_params.aclPermissionSet,'x') ='Owner' AND NVL(USER_AGENT,'x')='AzureDataFactory')
+                        AND NOT (
+                            user_identity.email = '7cdf5dcf-54d6-4a1c-ba10-7fd308054e87'
+                            AND (
+                                request_params.aclPermissionSet = 'Manage Run' AND request_params.targetUserId ='954664791769442' /*SopDWH*/
+                                OR request_params.aclPermissionSet = 'Admin' AND request_params.targetUserId = '81986449886208' /*Admin_prod*/
+                                OR request_params.aclPermissionSet = 'Admin' AND request_params.targetUserId = '41075057382951' /*AdminUsers*/
+                                OR request_params.aclPermissionSet = 'Owner' AND request_params.targetUserId = '6517422260732230' /*SPDBPRD*/
+                                OR request_params.aclPermissionSet = 'View' AND request_params.targetUserId = '83165665297392' /*BigData*/
+                                )
+                            )
+                        """
+        elif (f.service_name == 'notebook' and f.action_name == 'createNotebook') or (f.service_name == 'workspace' and f.action_name == 'createFile'):
+            condition = f"""({condition} 
+                    AND NOT (
+                        request_params.path LIKE '/Workspace/Repos/%' AND REGEXP_COUNT(request_params.path,'/') > 3
+                        OR request_params.path LIKE '/Workspace/Users/%' AND REGEXP_COUNT(request_params.path,'/') > 2
+                        OR request_params.path LIKE '/Users/%' AND REGEXP_COUNT(request_params.path,'/') >= 2
+                        OR request_params.path LIKE '/Workspace/%' AND REGEXP_COUNT(request_params.path,'/') > 2 AND NOT SPLIT_PART(request_params.path,'/',3) IN ('Users','Repos')
+                    )
+                )"""
+        elif f.service_name == 'workspace' and f.action_name == 'fileDelete':
+            condition = f"""({condition} 
+                    AND NOT (
+                        request_params.path LIKE '/Workspace/Repos/%' AND REGEXP_COUNT(request_params.path,'/') > 3
+                        OR request_params.path LIKE '/Workspace/Users/%' AND REGEXP_COUNT(request_params.path,'/') > 2
+                        OR request_params.path LIKE '/Users/%' AND REGEXP_COUNT(request_params.path,'/') >= 2
+                        OR request_params.path LIKE '/Workspace/%' AND REGEXP_COUNT(request_params.path,'/') > 2 AND NOT SPLIT_PART(request_params.path,'/',3) IN ('Users','Repos')
+                    )
+                )"""
+        else:
+            condition = f"({condition})"
+
         action_conditions.append(f"({condition})")
     
+    # Build CASE SQL
     object_id_sql = "CASE \n            " + "\n            ".join(object_id_cases) + "\n            ELSE 'unknown'\n        END"
     object_name_sql = "CASE \n            " + "\n            ".join(object_name_cases) + "\n            ELSE 'unknown'\n        END"
     object_type_sql = "CASE \n            " + "\n            ".join(object_type_cases) + "\n            ELSE 'unknown'\n        END"
-    action_filter_sql = " OR ".join(action_conditions)
+    action_filter_sql = " \n\t\t\tOR ".join(action_conditions)
     
-    # Filter FOR approved users (opposite of watcher)
+    # Build default filter for unhandled events (same as 05_watcher.py)
+    excl_services_name = ','.join(list(map(lambda x: f"'{x}'", [evento for evento in set(service_names)])))
+    excl_acls = ','.join(list(map(lambda x: f"'{x}'", [acl for acl in set(all_acls)])))
+    
+    default_filter = ""
+    if is_delete_event:
+        default_filter = f" \n\t\t\tOR (ACTION_NAME ilike '%delete%' AND NOT SERVICE_NAME IN ({excl_services_name}))"
+    elif is_permission_change:
+        default_filter = f" \n\t\t\tOR (ACTION_NAME ilike 'change%Acl' AND NOT ACTION_NAME IN ({excl_acls}))"
+    else:
+        default_filter = f" \n\t\t\tOR (ACTION_NAME ILIKE '%create%' AND NOT SERVICE_NAME IN ({excl_services_name}))"
+    
+    # Filter FOR approved users (opposite of watcher - use IN instead of NOT IN)
     identity_filter = f"user_identity.email IN ('{approved_identities_str}')"
+    
+    # Build exclusion for personal workspace deletions (same as 05_watcher.py)
+    personal_workspace_exclusion = ""
+    if is_delete_event:
+        personal_workspace_exclusion = """
+        -- Exclude notebook/folder/repo deletions in personal workspace (/Workspace/Users/)
+        AND NOT (
+            service_name = 'notebook' 
+            AND action_name IN ('deleteNotebook', 'deleteFolder', 'deleteRepo')
+            AND (
+                request_params.path LIKE '/Workspace/Users/%'
+                or request_params.path LIKE '/Users/%'
+                --Carpetas /Workspace/FolderName/...
+                OR NOT SPLIT_PART(request_params.path,'/',3) IN ('Users','Repos') 
+                    AND NOT REGEXP_LIKE(request_params.path,'^/Workspace/[^*]+[/.?]')
+                )
+        )"""
     
     query = f"""
     SELECT
@@ -561,19 +667,22 @@ def build_approved_user_query(
         service_name,
         action_name,
         user_identity.email as user_email,
+        {str(is_permission_change).lower()} AS is_permission_change,
+        {str(is_delete_event).lower()} AS is_delete_event,
         {object_id_sql} as object_id,
         {object_name_sql} as object_name,
         {object_type_sql} as object_type,
         request_params,
         response
     FROM system.access.audit
-    WHERE event_date >= current_date() - INTERVAL {lookback_hours} HOUR
+    WHERE EVENT_TIME >= DATE_TRUNC('HOUR',CURRENT_TIMESTAMP()) - INTERVAL {lookback_hours} HOUR
         AND workspace_id IN ('{workspace_ids_str}')
         AND user_identity.email IS NOT NULL
-        AND ({action_filter_sql})
-        AND {identity_filter}
-        AND user_identity.email != 'System-User'
-    ORDER BY event_time DESC
+        AND NVL(user_identity.email,'x') <> 'System-User'
+        AND response.status_code IN (200, 201, 202, 203, 204, 205, 206, 207, 208)
+        AND ({action_filter_sql}{default_filter})
+        AND {identity_filter}{personal_workspace_exclusion}
+    ORDER BY EVENT_TIME DESC
     """
     
     return query
@@ -598,7 +707,8 @@ if sync_creations and resource_ids_str:
         workspace_ids_str,
         lookback_hours,
         resource_ids_str,
-        event_type="creation"
+        is_permission_change=False,
+        is_delete_event=False
     )
     
     if create_query:
@@ -822,7 +932,8 @@ if sync_permissions and permission_ids_str:
         workspace_ids_str,
         lookback_hours,
         permission_ids_str,
-        event_type="acl_change"
+        is_permission_change=True,
+        is_delete_event=False
     )
     
     if acl_query:
