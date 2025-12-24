@@ -67,15 +67,54 @@ print("✓ Workspace client initialized")
 
 # COMMAND ----------
 
+import re
+
+def _detect_principal_type(principal: str) -> str:
+    """
+    Detect principal type based on the principal identifier.
+    
+    Rules:
+    - Users: contain '@' in email format (e.g., user@company.com)
+    - Service Principals: follow UUID/GUID pattern (e.g., d118594b-a1db-41b2-a6e2-a201377c2aec)
+    - Groups: everything else (e.g., "admins", "data_engineers", "users")
+    
+    Returns: 'user', 'service_principal', or 'group'
+    """
+    if not principal:
+        return 'user'
+    
+    # UUID/GUID pattern for service principals
+    # Format: 8-4-4-4-12 hexadecimal characters
+    uuid_pattern = r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    
+    if re.match(uuid_pattern, principal):
+        # Service principal (UUID format)
+        return 'service_principal'
+    elif '@' in principal:
+        # User (email format)
+        return 'user'
+    else:
+        # Group (e.g., "admins", "data_engineers")
+        return 'group'
+
+
 def get_workspace_permissions(client, object_type: str, object_id: str) -> List[Dict[str, str]]:
     """
     Get workspace-level permissions for an object using the permissions API.
-    Returns list of {principal_email, permission_level} dicts.
+    Returns list of {principal_email, principal_type, permission_level} dicts.
+    
+    Uses the Databricks SDK permissions.get() method with positional arguments
+    to avoid parameter name issues across SDK versions.
     """
     # Map object types to permissions API object types
+    # Supported types: alerts, alertsv2, apps, authorization, clusters, cluster-policies,
+    # dashboards, database-instances, database-projects, dbsql-dashboards, directories,
+    # experiments, files, genie, instance-pools, jobs, notebooks, pipelines, queries,
+    # registered-models, repos, serving-endpoints, warehouses, vector-search-endpoints
     type_mapping = {
         "notebook": "notebooks",
-        "dashboard": "dashboards",
+        "dashboard": "dbsql-dashboards",  # Legacy SQL dashboards
+        "lakeview_dashboard": "dashboards",  # Lakeview (AI/BI) dashboards
         "query": "queries",
         "folder": "directories",
         "directory": "directories",
@@ -87,49 +126,65 @@ def get_workspace_permissions(client, object_type: str, object_id: str) -> List[
         "job": "jobs",
         "pipelines": "pipelines",
         "pipeline": "pipelines",
-        "warehouse": "sql/warehouses",
+        "warehouse": "warehouses",
         "alert": "alerts",
         "apps": "apps",
         "servingEndpoint": "serving-endpoints",
         "vectorSearchEndpoint": "vector-search-endpoints",
         "mlflowExperiments": "experiments",
         "registeredModel": "registered-models",
+        "genieSpace": "genie",
     }
     
     permissions_type = type_mapping.get(object_type)
     if not permissions_type:
+        print(f"    → No permissions found or object not accessible")
         return []
     
     try:
-        perms = client.permissions.get(object_type=permissions_type, object_id=object_id)
+        # Use positional arguments to avoid SDK version parameter name issues
+        # The SDK expects: permissions.get(object_type, object_id) as positional args
+        perms = client.permissions.get(permissions_type, object_id)
         result = []
         
         if perms and perms.access_control_list:
             for acl in perms.access_control_list:
                 principal = None
+                principal_type = 'user'
+                
                 if acl.user_name:
                     principal = acl.user_name
+                    principal_type = 'user'
                 elif acl.service_principal_name:
                     principal = acl.service_principal_name
+                    principal_type = 'service_principal'
                 elif acl.group_name:
                     principal = acl.group_name
+                    principal_type = 'group'
                 
                 if principal and acl.all_permissions:
                     for perm in acl.all_permissions:
+                        perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
                         result.append({
                             'principal_email': principal,
-                            'permission_level': perm.permission_level.value
+                            'principal_type': principal_type,
+                            'permission_level': perm_level
                         })
         return result
     except Exception as e:
-        print(f"    Warning: Could not get permissions for {object_type}/{object_id}: {str(e)}")
+        error_msg = str(e)
+        # Check for common "not found" errors and suppress verbose output
+        if 'RESOURCE_DOES_NOT_EXIST' in error_msg or '404' in error_msg or 'does not exist' in error_msg.lower():
+            print(f"    → No permissions found or object not accessible")
+        else:
+            print(f"    Warning: Could not get permissions for {object_type}/{object_id}: {error_msg}")
         return []
 
 
 def get_uc_grants(client, object_type: str, full_name: str) -> List[Dict[str, str]]:
     """
-    Get Unity Catalog grants for a securable object using grants.get_effective API.
-    Returns list of {principal_email, permission_level} dicts.
+    Get Unity Catalog grants for a securable object using grants.get API.
+    Returns list of {principal_email, principal_type, permission_level} dicts.
     """
     try:
         from databricks.sdk.service.catalog import SecurableType
@@ -148,31 +203,43 @@ def get_uc_grants(client, object_type: str, full_name: str) -> List[Dict[str, st
             'recipient': SecurableType.RECIPIENT,
             'provider': SecurableType.PROVIDER,
             'metastore': SecurableType.METASTORE,
-            'ucRegisteredModel': SecurableType.FUNCTION,
+            'ucRegisteredModel': SecurableType.FUNCTION,  # UC models use FUNCTION type
+            'registeredModel': SecurableType.FUNCTION,
             'vectorIndex': SecurableType.TABLE,
             'featureTable': SecurableType.TABLE,
+            'monitors': SecurableType.TABLE,  # Monitors use table grants
         }
         
         sec_type = securable_type_map.get(object_type)
         if not sec_type:
+            print(f"    → No permissions found or object not accessible")
             return []
         
-        grants = client.grants.get_effective(securable_type=sec_type, full_name=full_name)
+        # Use the SecurableType enum directly (not .value)
+        grants = client.grants.get(securable_type=sec_type, full_name=full_name)
         result = []
         
         if grants and grants.privilege_assignments:
             for assignment in grants.privilege_assignments:
                 principal = assignment.principal if hasattr(assignment, 'principal') else None
                 if principal and assignment.privileges:
+                    # Detect principal type
+                    principal_type = _detect_principal_type(principal)
+                    
                     for privilege in assignment.privileges:
                         priv_name = privilege.privilege.value if hasattr(privilege.privilege, 'value') else str(privilege.privilege)
                         result.append({
                             'principal_email': principal,
+                            'principal_type': principal_type,
                             'permission_level': priv_name
                         })
         return result
     except Exception as e:
-        print(f"    Warning: Could not get UC grants for {object_type}/{full_name}: {str(e)}")
+        error_msg = str(e)
+        if 'RESOURCE_DOES_NOT_EXIST' in error_msg or '404' in error_msg or 'does not exist' in error_msg.lower():
+            print(f"    → No permissions found or object not accessible")
+        else:
+            print(f"    Warning: Could not get UC grants for {object_type}/{full_name}: {error_msg}")
         return []
 
 
@@ -185,45 +252,62 @@ def get_secret_scope_acls(client, scope_name: str) -> List[Dict[str, str]]:
             permission = acl.permission.value if hasattr(acl, 'permission') and hasattr(acl.permission, 'value') else str(acl.permission)
             
             if principal:
+                # Detect principal type
+                principal_type = _detect_principal_type(principal)
+                
                 result.append({
                     'principal_email': principal,
+                    'principal_type': principal_type,
                     'permission_level': permission
                 })
         return result
     except Exception as e:
-        print(f"    Warning: Could not get secret ACLs for {scope_name}: {str(e)}")
+        error_msg = str(e)
+        if 'RESOURCE_DOES_NOT_EXIST' in error_msg or '404' in error_msg or 'does not exist' in error_msg.lower():
+            print(f"    → No permissions found or object not accessible")
+        else:
+            print(f"    Warning: Could not get secret ACLs for {scope_name}: {error_msg}")
         return []
 
 
-def get_genie_space_permissions(space_id: str) -> List[Dict[str, str]]:
-    """Get permissions for a Genie space using REST API."""
+def get_genie_space_permissions(client, space_id: str) -> List[Dict[str, str]]:
+    """Get permissions for a Genie space using SDK permissions API with 'genie' object type."""
     try:
-        from dbruntime.databricks_repl_context import get_context
-        
-        ctx = get_context()
-        host = ctx.browserHostName
-        token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-        
-        response = requests.get(
-            f"https://{host}/api/2.0/permissions/genie-spaces/{space_id}",
-            headers={"Authorization": f"Bearer {token}"}
-        )
-        
         result = []
-        if response.status_code == 200:
-            data = response.json()
-            if 'access_control_list' in data:
-                for acl in data['access_control_list']:
-                    principal = acl.get('user_name') or acl.get('service_principal_name') or acl.get('group_name')
-                    if principal and 'all_permissions' in acl:
-                        for perm in acl['all_permissions']:
-                            result.append({
-                                'principal_email': principal,
-                                'permission_level': perm.get('permission_level', 'UNKNOWN')
-                            })
+        
+        # Use SDK permissions API with "genie" object type - use positional args
+        perms = client.permissions.get("genie", space_id)
+        
+        if perms and perms.access_control_list:
+            for acl in perms.access_control_list:
+                principal = None
+                principal_type = 'user'
+                
+                if acl.user_name:
+                    principal = acl.user_name
+                    principal_type = 'user'
+                elif acl.service_principal_name:
+                    principal = acl.service_principal_name
+                    principal_type = 'service_principal'
+                elif acl.group_name:
+                    principal = acl.group_name
+                    principal_type = 'group'
+                
+                if principal and acl.all_permissions:
+                    for perm in acl.all_permissions:
+                        perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
+                        result.append({
+                            'principal_email': principal,
+                            'principal_type': principal_type,
+                            'permission_level': perm_level
+                        })
         return result
     except Exception as e:
-        print(f"    Warning: Could not get Genie space permissions for {space_id}: {str(e)}")
+        error_msg = str(e)
+        if 'RESOURCE_DOES_NOT_EXIST' in error_msg or '404' in error_msg or 'does not exist' in error_msg.lower():
+            print(f"    → No permissions found or object not accessible")
+        else:
+            print(f"    Warning: Could not get Genie space permissions for {space_id}: {error_msg}")
         return []
 
 
@@ -231,12 +315,14 @@ def fetch_current_permissions(client, object_type: str, object_id: str) -> List[
     """
     Fetch current permissions for an object based on its type.
     Routes to the appropriate API based on object type.
+    Returns list of {principal_email, principal_type, permission_level} dicts.
     """
     # Unity Catalog object types
     uc_types = {
         'catalog', 'schema', 'table', 'volume', 'function', 'connection',
         'externalLocation', 'storageCredential', 'share', 'recipient',
-        'provider', 'metastore', 'ucRegisteredModel', 'vectorIndex', 'featureTable'
+        'provider', 'metastore', 'ucRegisteredModel', 'registeredModel',
+        'vectorIndex', 'featureTable', 'monitors'
     }
     
     if object_type in uc_types:
@@ -244,7 +330,7 @@ def fetch_current_permissions(client, object_type: str, object_id: str) -> List[
     elif object_type == 'secretScope':
         return get_secret_scope_acls(client, object_id)
     elif object_type == 'genieSpace':
-        return get_genie_space_permissions(object_id)
+        return get_genie_space_permissions(client, object_id)
     else:
         return get_workspace_permissions(client, object_type, object_id)
 
@@ -581,20 +667,79 @@ if sync_creations and resource_ids_str:
             print(f"New objects to add: {new_count}")
             
             if new_count > 0:
-                # Prepare records for insertion
-                new_objects_to_insert = new_objects_df.select(
-                    col("object_id"),
-                    col("workspace_id"),
-                    col("object_type"),
-                    col("object_name"),
-                    lit(None).cast("string").alias("object_path"),
-                    col("user_email").alias("owner_email"),
-                    lit(None).cast("array<struct<principal_email:string,permission_level:string>>").alias("permissions"),
-                    lit(None).cast("map<string,string>").alias("metadata"),
-                    lit(True).alias("is_active"),
-                    current_timestamp().alias("created_at"),
-                    current_timestamp().alias("updated_at")
-                )
+                # Collect new objects and fetch their current permissions
+                new_objects_list = new_objects_df.collect()
+                new_objects_with_permissions = []
+                
+                print(f"Fetching permissions for {len(new_objects_list)} new objects...")
+                
+                for row in new_objects_list:
+                    object_id = row.object_id
+                    object_type = row.object_type
+                    workspace_id = row.workspace_id
+                    object_name = row.object_name
+                    user_email = row.user_email
+                    
+                    # Fetch current permissions for this object
+                    permissions = fetch_current_permissions(client, object_type, object_id)
+                    
+                    # Try to get object path if available from audit log
+                    object_path = None
+                    if hasattr(row, 'object_path') and row.object_path:
+                        object_path = row.object_path
+                    
+                    # Build metadata dict
+                    metadata = {}
+                    if hasattr(row, 'event_time') and row.event_time:
+                        metadata['created_at'] = str(row.event_time)
+                    if hasattr(row, 'action_name') and row.action_name:
+                        metadata['created_by_action'] = row.action_name
+                    
+                    # Determine owner from permissions if not set
+                    owner_email = user_email
+                    for perm in permissions:
+                        if perm.get('permission_level') in ['CAN_MANAGE', 'MANAGE', 'ALL_PRIVILEGES', 'OWNER']:
+                            if perm.get('principal_type') == 'user':
+                                owner_email = perm.get('principal_email', user_email)
+                                break
+                    
+                    new_objects_with_permissions.append({
+                        'object_id': object_id,
+                        'workspace_id': workspace_id,
+                        'object_type': object_type,
+                        'object_name': object_name,
+                        'object_path': object_path,
+                        'owner_email': owner_email,
+                        'permissions': permissions if permissions else None,
+                        'metadata': metadata if metadata else None,
+                        'is_active': True,
+                        'created_at': datetime.utcnow(),
+                        'updated_at': datetime.utcnow()
+                    })
+                
+                print(f"  Fetched permissions for {len(new_objects_with_permissions)} objects")
+                
+                # Define schema for the DataFrame - must match governance_preapproved_objects table schema
+                new_objects_schema = StructType([
+                    StructField('object_id', StringType(), True),
+                    StructField('workspace_id', StringType(), True),
+                    StructField('object_type', StringType(), True),
+                    StructField('object_name', StringType(), True),
+                    StructField('object_path', StringType(), True),
+                    StructField('owner_email', StringType(), True),
+                    StructField('permissions', ArrayType(StructType([
+                        StructField('principal_email', StringType(), True),
+                        StructField('principal_type', StringType(), True),
+                        StructField('permission_level', StringType(), True)
+                    ])), True),
+                    StructField('metadata', MapType(StringType(), StringType()), True),
+                    StructField('is_active', BooleanType(), True),
+                    StructField('created_at', TimestampType(), True),
+                    StructField('updated_at', TimestampType(), True)
+                ])
+                
+                # Create DataFrame with explicit schema
+                new_objects_to_insert = spark.createDataFrame(new_objects_with_permissions, schema=new_objects_schema)
                 
                 # Insert new objects
                 new_objects_to_insert.createOrReplaceTempView("new_approved_objects")
@@ -608,7 +753,9 @@ if sync_creations and resource_ids_str:
                 """)
                 
                 creations_synced = new_count
+                perm_count = sum(1 for obj in new_objects_with_permissions if obj['permissions'])
                 print(f"✓ Added {new_count} new objects to pre-approved objects table")
+                print(f"  - Objects with permissions fetched: {perm_count}")
                 
                 # Show sample of synced objects
                 print("\nSample of newly synced objects:")
@@ -751,7 +898,7 @@ if sync_permissions and permission_ids_str:
                         })
                         permissions_added += 1
                 
-                # Define schema for the DataFrame
+                # Define schema for the DataFrame - must match governance_preapproved_objects table schema
                 permissions_schema = StructType([
                     StructField('workspace_id', StringType(), True),
                     StructField('object_id', StringType(), True),
@@ -761,6 +908,7 @@ if sync_permissions and permission_ids_str:
                     StructField('owner_email', StringType(), True),
                     StructField('permissions', ArrayType(StructType([
                         StructField('principal_email', StringType(), True),
+                        StructField('principal_type', StringType(), True),  # 'user', 'group', or 'service_principal'
                         StructField('permission_level', StringType(), True)
                     ])), True),
                     StructField('metadata', MapType(StringType(), StringType()), True),

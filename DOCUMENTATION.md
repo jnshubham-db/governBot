@@ -208,14 +208,19 @@ The **Databricks Governance Automation System** (GovernBot) is a comprehensive s
 | Alias | Expands To |
 |-------|------------|
 | `ALL` | All object types (wildcard) |
-| `UC_DATA_OBJECTS` | catalog, schema, table, volume, function |
+| `UC_DATA_OBJECTS` | catalog, schema, table, volume, function, tableConstraint |
 | `UC_SECURITY` | storageCredential, externalLocation, connection |
 | `UC_ALL` | All Unity Catalog objects |
 | `COMPUTE` | cluster, clusterPolicy, instancePool, warehouse |
-| `ML_AI` | mlflowExperiments, servingEndpoint, registeredModel, featureSpec, featureTable, ucRegisteredModel |
+| `ML_AI` | mlflowExperiments, servingEndpoint, registeredModel, featureSpec, featureTable, ucRegisteredModel, ucModelVersion |
 | `DATA_SHARING` | share, recipient, provider |
 | `DASHBOARDS_BI` | dashboard, genieSpace, alert, query |
 | `ORCHESTRATION` | jobs, pipelines |
+| `SECRETS` | secretScope |
+| `VECTOR_SEARCH` | vectorSearchEndpoint, vectorIndex |
+| `APPS` | apps |
+| `MONITORING` | monitors |
+| `CLEAN_ROOMS` | cleanRoom |
 
 **Example Use Cases**:
 ```python

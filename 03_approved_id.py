@@ -57,12 +57,19 @@ print(f"Schema: {schema}")
 # MAGIC
 # MAGIC **Group Aliases (expand to multiple object types):**
 # MAGIC - `ALL`: All object types (wildcard)
-# MAGIC - `UC_DATA_OBJECTS`: catalog, schema, table, volume, function
+# MAGIC - `UC_DATA_OBJECTS`: catalog, schema, table, volume, function, tableConstraint
 # MAGIC - `UC_SECURITY`: storageCredential, externalLocation, connection
 # MAGIC - `UC_ALL`: All Unity Catalog objects
 # MAGIC - `COMPUTE`: cluster, clusterPolicy, instancePool, warehouse
-# MAGIC - `ML_AI`: mlflowExperiments, servingEndpoint, registeredModel, featureSpec, featureTable, ucRegisteredModel
+# MAGIC - `ML_AI`: mlflowExperiments, servingEndpoint, registeredModel, featureSpec, featureTable, ucRegisteredModel, ucModelVersion
 # MAGIC - `DATA_SHARING`: share, recipient, provider
+# MAGIC - `DASHBOARDS_BI`: dashboard, genieSpace, alert, query
+# MAGIC - `ORCHESTRATION`: jobs, pipelines
+# MAGIC - `SECRETS`: secretScope
+# MAGIC - `VECTOR_SEARCH`: vectorSearchEndpoint, vectorIndex
+# MAGIC - `APPS`: apps
+# MAGIC - `MONITORING`: monitors
+# MAGIC - `CLEAN_ROOMS`: cleanRoom
 # MAGIC
 # MAGIC **Note:** An identity can have both flags set to True if they are authorized for both actions.
 
@@ -115,21 +122,51 @@ from typing import List, Dict, Any
 from pyspark.sql.types import *
 
 # Group alias expansions - map group names to their constituent object types
+# IMPORTANT: These object types MUST match exactly with object_type values in governance_filters table
 APPROVED_ACTION_GROUPS = {
     'ALL': ['ALL'],  # Special wildcard - handled separately in watcher
-    'UC_DATA_OBJECTS': ['catalog', 'schema', 'table', 'volume', 'function'],
+    
+    # Unity Catalog Data Objects
+    'UC_DATA_OBJECTS': ['catalog', 'schema', 'table', 'volume', 'function', 'tableConstraint'],
+    
+    # Unity Catalog Security/Infrastructure
     'UC_SECURITY': ['storageCredential', 'externalLocation', 'connection'],
+    
+    # All Unity Catalog Objects
     'UC_ALL': ['catalog', 'schema', 'table', 'volume', 'function', 'connection', 
                'externalLocation', 'storageCredential', 'ucRegisteredModel', 'ucModelVersion', 
-               'abacPolicy', 'recipient', 'share', 'provider'],
+               'abacPolicy', 'recipient', 'share', 'provider', 'tableConstraint'],
+    
+    # Compute Resources
     'COMPUTE': ['cluster', 'clusterPolicy', 'instancePool', 'warehouse'],
+    
+    # ML/AI Resources (both MLflow and UC models)
     'ML_AI': ['mlflowExperiments', 'servingEndpoint', 'registeredModel', 'featureSpec', 
-              'featureTable', 'ucRegisteredModel'],
+              'featureTable', 'ucRegisteredModel', 'ucModelVersion'],
+    
+    # Delta Sharing
     'DATA_SHARING': ['share', 'recipient', 'provider'],
+    
+    # Dashboards and BI
     'DASHBOARDS_BI': ['dashboard', 'genieSpace', 'alert', 'query'],
+    
+    # Orchestration
     'ORCHESTRATION': ['jobs', 'pipelines'],
+    
+    # Secrets
     'SECRETS': ['secretScope'],
+    
+    # Vector Search
     'VECTOR_SEARCH': ['vectorSearchEndpoint', 'vectorIndex'],
+    
+    # Apps
+    'APPS': ['apps'],
+    
+    # Monitoring
+    'MONITORING': ['monitors'],
+    
+    # Clean Rooms
+    'CLEAN_ROOMS': ['cleanRoom'],
 }
 
 def expand_approved_actions(actions: List[str]) -> List[str]:
