@@ -1025,23 +1025,24 @@ def _revert_uc_permissions(client, object_id: str, object_type: str, approved_pe
     4. Adds grants that are in approved but not current
     """
     try:
-        from databricks.sdk.service.catalog import SecurableType, PermissionsChange, Privilege
+        from databricks.sdk.service.catalog import PermissionsChange, Privilege
         
-        # Map object types to securable types
+        # Map object types to securable type strings
+        # SDK grants.get() and grants.update() accept string for securable_type parameter
         securable_type_mapping = {
-            "catalog": SecurableType.CATALOG,
-            "schema": SecurableType.SCHEMA,
-            "table": SecurableType.TABLE,
-            "volume": SecurableType.VOLUME,
-            "function": SecurableType.FUNCTION,
-            "connection": SecurableType.CONNECTION,
-            "externalLocation": SecurableType.EXTERNAL_LOCATION,
-            "storageCredential": SecurableType.STORAGE_CREDENTIAL,
-            "share": SecurableType.SHARE,
-            "recipient": SecurableType.RECIPIENT,
-            "provider": SecurableType.PROVIDER,
-            "metastore": SecurableType.METASTORE,
-            "ucRegisteredModel": SecurableType.FUNCTION,  # UC models use FUNCTION securable type
+            "catalog": "catalog",
+            "schema": "schema",
+            "table": "table",
+            "volume": "volume",
+            "function": "function",
+            "connection": "connection",
+            "externalLocation": "external_location",
+            "storageCredential": "storage_credential",
+            "share": "share",
+            "recipient": "recipient",
+            "provider": "provider",
+            "metastore": "metastore",
+            "ucRegisteredModel": "function",  # UC models use function securable type
         }
         
         securable_type = securable_type_mapping.get(object_type)
