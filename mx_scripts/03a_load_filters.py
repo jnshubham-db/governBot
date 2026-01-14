@@ -236,24 +236,24 @@ acl_filters_raw = [
     # /directories/, /experiments/, /files/, /folders/, /genie/, /notebooks/, /projects/, /queries/, /repos/
     ["workspace_acl_change", "workspace", "changeWorkspaceAcl", 
      """CASE 
-        WHEN request_params.acl_path_prefix LIKE '/alerts/%' THEN 'alert'
-        WHEN request_params.acl_path_prefix LIKE '/alertsv2/%' THEN 'alert'
-        WHEN request_params.acl_path_prefix LIKE '/dashboards/%' THEN 'dashboard'
-        WHEN request_params.acl_path_prefix LIKE '/dashboardsv3/%' THEN 'lakeview_dashboard'
-        WHEN request_params.acl_path_prefix LIKE '/datarooms/%' THEN 'dataroom'
-        WHEN request_params.acl_path_prefix LIKE '/directories/%' THEN 'directory'
-        WHEN request_params.acl_path_prefix LIKE '/experiments/%' THEN 'mlflowExperiments'
-        WHEN request_params.acl_path_prefix LIKE '/files/%' THEN 'file'
-        WHEN request_params.acl_path_prefix LIKE '/folders/%' THEN 'folder'
-        WHEN request_params.acl_path_prefix LIKE '/genie/%' THEN 'genieSpace'
-        WHEN request_params.acl_path_prefix LIKE '/notebooks/%' THEN 'notebook'
-        WHEN request_params.acl_path_prefix LIKE '/projects/%' THEN 'project'
-        WHEN request_params.acl_path_prefix LIKE '/queries/%' THEN 'query'
-        WHEN request_params.acl_path_prefix LIKE '/repos/%' THEN 'repo'
+        WHEN request_params.acl_path_prefix LIKE 'alerts/%' THEN 'alert'
+        WHEN request_params.acl_path_prefix LIKE 'alertsv2/%' THEN 'alert'
+        WHEN request_params.acl_path_prefix LIKE 'dashboards/%' THEN 'dashboard'
+        WHEN request_params.acl_path_prefix LIKE 'dashboardsv3/%' THEN 'lakeview_dashboard'
+        WHEN request_params.acl_path_prefix LIKE 'datarooms/%' THEN 'dataroom'
+        WHEN request_params.acl_path_prefix LIKE 'directories/%' THEN 'directory'
+        WHEN request_params.acl_path_prefix LIKE 'experiments/%' THEN 'mlflowExperiments'
+        WHEN request_params.acl_path_prefix LIKE 'files/%' THEN 'file'
+        WHEN request_params.acl_path_prefix LIKE 'folders/%' THEN 'folder'
+        WHEN request_params.acl_path_prefix LIKE 'genie/%' THEN 'genieSpace'
+        WHEN request_params.acl_path_prefix LIKE 'notebooks/%' THEN 'notebook'
+        WHEN request_params.acl_path_prefix LIKE 'projects/%' THEN 'project'
+        WHEN request_params.acl_path_prefix LIKE 'queries/%' THEN 'query'
+        WHEN request_params.acl_path_prefix LIKE 'repos/%' THEN 'repo'
         ELSE 'directory'
      END""", 
      "request_params.resourceId", "request_params.aclChangeResourceName", "REVERT_PERMISSION", 
-     {"resource_path": "request_params.aclChangeResourceName", "acl_path_prefix": "request_params.acl_path_prefix"}, True, 
+     {"resource_path": "request_params.aclChangeResourceName"}, True, 
      "Workspace ACL change (notebooks, folders, dashboards, queries, repos, alerts, experiments, genie, files)"],
     
     # Unity Catalog Grants - object_type is dynamic from securable_type

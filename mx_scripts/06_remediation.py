@@ -1010,96 +1010,18 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
         return (False, str(e))
 
 
-def _get_privilege_name(priv) -> str:
-    """
-    Extract privilege name from a privilege object.
-    
-    Handles different SDK versions where priv can be:
-    - A PrivilegeInfo object with priv.privilege attribute
-    - A Privilege enum directly
-    - A string
-    """
-    if hasattr(priv, 'privilege'):
-        # PrivilegeInfo object - extract the privilege enum
-        privilege_obj = priv.privilege
-        if hasattr(privilege_obj, 'value'):
-            return privilege_obj.value
-        else:
-            return str(privilege_obj)
-    elif hasattr(priv, 'value'):
-        # Privilege enum directly
-        return priv.value
-    else:
-        # String or unknown type
-        return str(priv)
-
-
-def _get_privilege_enum(privilege_name: str):
-    """
-    Get Privilege enum from privilege name string.
-    
-    Handles the conversion safely, returning None if the privilege is not found.
-    """
-    from databricks.sdk.service.catalog import Privilege
-    
-    # Normalize the privilege name (replace spaces with underscores, uppercase)
-    normalized = privilege_name.replace(' ', '_').upper()
-    
-    try:
-        return Privilege[normalized]
-    except KeyError:
-        # Try to find by value
-        for p in Privilege:
-            if p.value == privilege_name or p.value == normalized:
-                return p
-        print(f"    - Warning: Unknown privilege '{privilege_name}', skipping")
-        return None
-
-
-def _safe_get_perm_field(perm, field_name: str, default=None):
-    """
-    Safely get a field from a permission object.
-    
-    Handles different data types:
-    - dict: use perm[field_name] or perm.get()
-    - Row object: use perm[field_name] or getattr()
-    - Other: try attribute access
-    
-    This is needed because permission data can come from:
-    - Spark DataFrame rows (Row objects)
-    - Python dictionaries
-    - SDK response objects
-    """
-    try:
-        if isinstance(perm, dict):
-            return perm.get(field_name, default)
-        elif hasattr(perm, 'asDict'):
-            # Spark Row object - convert to dict first
-            perm_dict = perm.asDict()
-            return perm_dict.get(field_name, default)
-        elif hasattr(perm, field_name):
-            return getattr(perm, field_name, default)
-        else:
-            # Try dict-like access
-            try:
-                return perm[field_name]
-            except (KeyError, TypeError):
-                return default
-    except Exception:
-        return default
-
-
 def _revert_uc_permissions(client, object_id: str, object_type: str, approved_perms) -> Tuple[bool, Optional[str]]:
     """
     Revert Unity Catalog object permissions using grants API.
     
-    UC objects use a different permission model based on grants (OWNER, ALL PRIVILEGES, 
-    USE CATALOG, USE SCHEMA, SELECT, MODIFY, etc.)
+    Reference: https://databricks-sdk-py.readthedocs.io/en/latest/workspace/catalog/grants.html
+    
+    UC objects use grants (OWNER, ALL_PRIVILEGES, USE_CATALOG, USE_SCHEMA, SELECT, MODIFY, etc.)
     
     This function:
-    1. Gets current grants from UC
+    1. Gets current grants from UC using grants.get()
     2. Compares with pre-approved grants from governance table
-    3. Revokes grants not in approved list
+    3. Revokes grants not in approved list using grants.update()
     4. Adds grants that are in approved but not current
     """
     try:
@@ -1132,26 +1054,32 @@ def _revert_uc_permissions(client, object_id: str, object_type: str, approved_pe
         except Exception as get_error:
             return (False, f"Failed to get current UC grants: {str(get_error)}")
         
-        # Build a map of current grants: {principal: set(privileges)}
-        current_grants_map = {}
+        # Build a map of current grants: {principal: set(Privilege enums)}
+        # Also keep string names for comparison with approved perms from DB
+        current_grants_map = {}  # {principal: set(privilege_name_strings)}
+        current_privilege_enums = {}  # {principal: {priv_name: Privilege enum}}
         owner_principal = None
         
         if current_grants.privilege_assignments:
             for assignment in current_grants.privilege_assignments:
                 principal = assignment.principal
                 privileges = set()
+                priv_enum_map = {}
                 
                 if assignment.privileges:
-                    for priv in assignment.privileges:
-                        # Use helper function to handle different SDK versions
-                        priv_name = _get_privilege_name(priv)
+                    for priv_info in assignment.privileges:
+                        # priv_info is PrivilegeInfo with .privilege attribute (Privilege enum)
+                        priv_enum = priv_info.privilege
+                        priv_name = priv_enum.value if priv_enum else str(priv_info)
                         privileges.add(priv_name)
+                        priv_enum_map[priv_name] = priv_enum
                         
                         # Track the owner
                         if priv_name == 'OWNER' or priv_name == 'ALL_PRIVILEGES':
                             owner_principal = principal
                 
                 current_grants_map[principal] = privileges
+                current_privilege_enums[principal] = priv_enum_map
         
         print(f"  → Current grants: {len(current_grants_map)} principals")
         
@@ -1168,25 +1096,22 @@ def _revert_uc_permissions(client, object_id: str, object_type: str, approved_pe
                     continue
                 
                 # Revoke all privileges for this principal
-                privileges_to_revoke = [p for p in privileges if p != 'OWNER']
-                if privileges_to_revoke:
+                privs_to_revoke = [p for p in privileges if p != 'OWNER']
+                if privs_to_revoke:
                     try:
-                        # Convert privilege names to Privilege enums safely
-                        privilege_enums = [_get_privilege_enum(p) for p in privileges_to_revoke]
-                        privilege_enums = [p for p in privilege_enums if p is not None]
+                        # Get the Privilege enums from our map
+                        priv_enums = [current_privilege_enums[principal][p] for p in privs_to_revoke 
+                                     if p in current_privilege_enums.get(principal, {})]
                         
-                        if privilege_enums:
-                            changes = [PermissionsChange(
-                                remove=privilege_enums,
-                                principal=principal
-                            )]
+                        if priv_enums:
+                            changes = [PermissionsChange(remove=priv_enums, principal=principal)]
                             client.grants.update(
                                 securable_type=securable_type,
                                 full_name=object_id,
                                 changes=changes
                             )
                             revoked_count += 1
-                            print(f"    - Revoked {len(privilege_enums)} privileges from: {principal}")
+                            print(f"    - Revoked {len(priv_enums)} privileges from: {principal}")
                     except Exception as revoke_error:
                         print(f"    - Warning: Failed to revoke from {principal}: {str(revoke_error)}")
             
@@ -1196,14 +1121,14 @@ def _revert_uc_permissions(client, object_id: str, object_type: str, approved_pe
         print(f"  → Pre-approved permissions found for UC object")
         print(f"  → Syncing to pre-approved grants state")
         
-        # Build a map of approved grants: {principal: set(privileges)}
+        # Build a map of approved grants: {principal: set(privilege_names)}
         approved_grants_map = {}
         permissions_list = approved_perms[0].permissions
         
         for perm in permissions_list:
-            # Use safe accessor to handle both Row objects and dicts
-            principal = _safe_get_perm_field(perm, 'principal_email')
-            privilege = _safe_get_perm_field(perm, 'permission_level')
+            # Spark Row objects support direct attribute access
+            principal = perm.principal_email
+            privilege = perm.permission_level
             
             if not principal or not privilege:
                 continue
@@ -1222,27 +1147,22 @@ def _revert_uc_permissions(client, object_id: str, object_type: str, approved_pe
                 continue
             
             approved_privs = approved_grants_map.get(principal, set())
-            
-            # Find privileges to revoke (in current but not in approved)
             privs_to_revoke = current_privs - approved_privs - {'OWNER'}
             
             if privs_to_revoke:
                 try:
-                    # Convert privilege names to Privilege enums safely
-                    privilege_enums = [_get_privilege_enum(p) for p in privs_to_revoke]
-                    privilege_enums = [p for p in privilege_enums if p is not None]
+                    # Get Privilege enums from our map for privileges to revoke
+                    priv_enums = [current_privilege_enums[principal][p] for p in privs_to_revoke
+                                 if p in current_privilege_enums.get(principal, {})]
                     
-                    if privilege_enums:
-                        changes = [PermissionsChange(
-                            remove=privilege_enums,
-                            principal=principal
-                        )]
+                    if priv_enums:
+                        changes = [PermissionsChange(remove=priv_enums, principal=principal)]
                         client.grants.update(
                             securable_type=securable_type,
                             full_name=object_id,
                             changes=changes
                         )
-                        revoked_count += len(privilege_enums)
+                        revoked_count += len(priv_enums)
                         print(f"    - Revoked {privs_to_revoke} from: {principal}")
                 except Exception as revoke_error:
                     print(f"    - Warning: Failed to revoke from {principal}: {str(revoke_error)}")
@@ -1251,28 +1171,26 @@ def _revert_uc_permissions(client, object_id: str, object_type: str, approved_pe
         added_count = 0
         for principal, approved_privs in approved_grants_map.items():
             current_privs = current_grants_map.get(principal, set())
-            
-            # Find privileges to add (in approved but not in current)
-            # Skip OWNER as it can't be granted this way
             privs_to_add = approved_privs - current_privs - {'OWNER', 'ALL_PRIVILEGES'}
             
             if privs_to_add:
                 try:
-                    # Convert privilege names to Privilege enums safely
-                    privilege_enums = [_get_privilege_enum(p) for p in privs_to_add]
-                    privilege_enums = [p for p in privilege_enums if p is not None]
+                    # Convert privilege name strings to Privilege enums
+                    priv_enums = []
+                    for p in privs_to_add:
+                        try:
+                            priv_enums.append(Privilege(p))
+                        except ValueError:
+                            print(f"    - Warning: Unknown privilege '{p}', skipping")
                     
-                    if privilege_enums:
-                        changes = [PermissionsChange(
-                            add=privilege_enums,
-                            principal=principal
-                        )]
+                    if priv_enums:
+                        changes = [PermissionsChange(add=priv_enums, principal=principal)]
                         client.grants.update(
                             securable_type=securable_type,
                             full_name=object_id,
                             changes=changes
                         )
-                        added_count += len(privilege_enums)
+                        added_count += len(priv_enums)
                         print(f"    - Added {privs_to_add} to: {principal}")
                 except Exception as add_error:
                     print(f"    - Warning: Failed to add grants to {principal}: {str(add_error)}")
@@ -1286,15 +1204,11 @@ def _revert_uc_permissions(client, object_id: str, object_type: str, approved_pe
                 
                 if privs_to_revoke:
                     try:
-                        # Convert privilege names to Privilege enums safely
-                        privilege_enums = [_get_privilege_enum(p) for p in privs_to_revoke]
-                        privilege_enums = [p for p in privilege_enums if p is not None]
+                        priv_enums = [current_privilege_enums[principal][p] for p in privs_to_revoke
+                                     if p in current_privilege_enums.get(principal, {})]
                         
-                        if privilege_enums:
-                            changes = [PermissionsChange(
-                                remove=privilege_enums,
-                                principal=principal
-                            )]
+                        if priv_enums:
+                            changes = [PermissionsChange(remove=priv_enums, principal=principal)]
                             client.grants.update(
                                 securable_type=securable_type,
                                 full_name=object_id,
@@ -1379,9 +1293,9 @@ def _revert_secret_scope_permissions(client, scope_name: str, approved_perms) ->
         permissions_list = approved_perms[0].permissions
         
         for perm in permissions_list:
-            # Use safe accessor to handle both Row objects and dicts
-            principal = _safe_get_perm_field(perm, 'principal_email')
-            permission = _safe_get_perm_field(perm, 'permission_level')
+            # Spark Row objects support direct attribute access
+            principal = perm.principal_email
+            permission = perm.permission_level
             
             if not principal or not permission:
                 continue
@@ -1443,9 +1357,14 @@ def _revert_workspace_permissions(client, object_id: str, object_type: str, appr
     """
     Revert workspace object permissions using permissions API.
     
+    Reference: https://databricks-sdk-py.readthedocs.io/en/latest/workspace/iam/permissions.html
+    
+    Uses permissions.set() with AccessControlRequest objects.
     Handles different principal types (users, groups, service principals) correctly.
     """
     try:
+        from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
+        
         permissions_object_type = type_mapping.get(object_type)
         if not permissions_object_type:
             return (False, f"Unsupported object type for permission revert: {object_type}")
@@ -1454,8 +1373,6 @@ def _revert_workspace_permissions(client, object_id: str, object_type: str, appr
         if object_type == 'lakeview_dashboard':
             print(f"  → Lakeview dashboards use workspace object permissions")
             print(f"  → Attempting to revert permissions via workspace path")
-            # Lakeview dashboards permissions are managed differently
-            # They typically inherit from the workspace folder they're in
             return (False, "Lakeview dashboards don't support direct permission revert. Permissions are inherited from workspace folder.")
         
         if not approved_perms or not approved_perms[0].permissions:
@@ -1474,56 +1391,74 @@ def _revert_workspace_permissions(client, object_id: str, object_type: str, appr
         print(f"  → Pre-approved permissions found")
         print(f"  → Resetting to pre-approved state")
         
-        # Extract permissions - handle both Row objects and dicts
         permissions_list = approved_perms[0].permissions
-        
-        # Convert to SDK format
-        from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
         
         acl_requests = []
         for perm in permissions_list:
-            # Use safe accessor to handle both Row objects and dicts
-            principal_email = _safe_get_perm_field(perm, 'principal_email')
-            permission_level = _safe_get_perm_field(perm, 'permission_level')
-            principal_type = _safe_get_perm_field(perm, 'principal_type', None)
+            # Spark Row objects support direct attribute access
+            principal_email = perm.principal_email
+            permission_level_str = perm.permission_level
+            # principal_type may be None if not stored
+            principal_type = getattr(perm, 'principal_type', None)
             
-            if not principal_email or not permission_level:
-                print(f"    - Warning: Skipping invalid permission entry: {perm}")
+            if not principal_email or not permission_level_str:
+                print(f"    - Warning: Skipping invalid permission entry")
                 continue
             
-            request_kwargs = {
-                'permission_level': PermissionLevel(permission_level)
-            }
-            
+            # Build AccessControlRequest based on principal type
+            # Reference: AccessControlRequest(group_name=..., permission_level=PermissionLevel.CAN_RUN)
             if principal_type:
-                # Use the stored principal type for accurate permission setting
                 if principal_type == 'user':
-                    request_kwargs['user_name'] = principal_email
+                    acl_requests.append(AccessControlRequest(
+                        user_name=principal_email,
+                        permission_level=PermissionLevel(permission_level_str)
+                    ))
                 elif principal_type == 'service_principal':
-                    request_kwargs['service_principal_name'] = principal_email
+                    acl_requests.append(AccessControlRequest(
+                        service_principal_name=principal_email,
+                        permission_level=PermissionLevel(permission_level_str)
+                    ))
                 elif principal_type == 'group':
-                    request_kwargs['group_name'] = principal_email
+                    acl_requests.append(AccessControlRequest(
+                        group_name=principal_email,
+                        permission_level=PermissionLevel(permission_level_str)
+                    ))
                 else:
                     # Unknown type, fall back to detection
-                    principal_type = _detect_principal_type(principal_email)
-                    if principal_type == 'user':
-                        request_kwargs['user_name'] = principal_email
-                    elif principal_type == 'service_principal':
-                        request_kwargs['service_principal_name'] = principal_email
+                    detected_type = _detect_principal_type(principal_email)
+                    if detected_type == 'user':
+                        acl_requests.append(AccessControlRequest(
+                            user_name=principal_email,
+                            permission_level=PermissionLevel(permission_level_str)
+                        ))
+                    elif detected_type == 'service_principal':
+                        acl_requests.append(AccessControlRequest(
+                            service_principal_name=principal_email,
+                            permission_level=PermissionLevel(permission_level_str)
+                        ))
                     else:
-                        request_kwargs['group_name'] = principal_email
+                        acl_requests.append(AccessControlRequest(
+                            group_name=principal_email,
+                            permission_level=PermissionLevel(permission_level_str)
+                        ))
             else:
                 # Fallback: Detect principal type based on naming conventions
                 detected_type = _detect_principal_type(principal_email)
                 if detected_type == 'user':
-                    request_kwargs['user_name'] = principal_email
+                    acl_requests.append(AccessControlRequest(
+                        user_name=principal_email,
+                        permission_level=PermissionLevel(permission_level_str)
+                    ))
                 elif detected_type == 'service_principal':
-                    request_kwargs['service_principal_name'] = principal_email
+                    acl_requests.append(AccessControlRequest(
+                        service_principal_name=principal_email,
+                        permission_level=PermissionLevel(permission_level_str)
+                    ))
                 else:
-                    request_kwargs['group_name'] = principal_email
-            
-            request = AccessControlRequest(**request_kwargs)
-            acl_requests.append(request)
+                    acl_requests.append(AccessControlRequest(
+                        group_name=principal_email,
+                        permission_level=PermissionLevel(permission_level_str)
+                    ))
         
         # Set permissions to pre-approved state
         client.permissions.set(
