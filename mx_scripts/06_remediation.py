@@ -16,6 +16,14 @@
 
 # COMMAND ----------
 
+# MAGIC %pip install -U databricks-sdk
+
+# COMMAND ----------
+
+# MAGIC %restart_python
+
+# COMMAND ----------
+
 #dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 #dbutils.widgets.text("schema", "sch_mng_admon", "Schema Name")
 dbutils.widgets.dropdown("dry_run", "true", ["true", "false"], "Dry Run Mode")
@@ -911,103 +919,85 @@ def get_resource_definition(client, object_type: str, object_id: str) -> Optiona
 
 def revert_permissions(client, workspace_id: str, object_id: str, object_type: str) -> Tuple[bool, Optional[str]]:
     """
-    Revert object permissions:
-    1. Check if object has pre-approved permissions in governance table
-    2. If found: Reset to pre-approved permissions
-    3. If not found: Remove all explicit permissions (keep only inherited)
+    Revert object permissions to pre-approved state.
     
-    Supports both workspace-level permissions API and Unity Catalog grants API.
+    Routes to the appropriate permission API based on object type:
+    - Unity Catalog objects → grants API
+    - Secret scopes → secrets ACL API
+    - Workspace objects → permissions API
     
     Args:
-        client: WorkspaceClient instance
-        workspace_id: Workspace ID
-        object_id: Object ID
-        object_type: Object type
+        client: Databricks WorkspaceClient
+        workspace_id: Workspace ID where the object resides
+        object_id: Object identifier (ID or full name)
+        object_type: Type of object
     
     Returns:
-        Tuple of (success: bool, error_message: Optional[str])
+        Tuple of (success: bool, message: Optional[str])
     """
-    try:
-        # Unity Catalog object types that use grants API instead of permissions API
-        uc_object_types = {
-            "catalog", "schema", "table", "volume", "function", "connection",
-            "externalLocation", "storageCredential", "share", "recipient", 
-            "provider", "metastore", "ucRegisteredModel"
-        }
-        # Secret scope uses a dedicated secrets.list_acls / secrets.put_acl API
-        secret_scope_types = {"secretScope"}
-        
-        # Map object type to permissions API object type (for workspace objects)
-        # Supported types: alerts, alertsv2, apps, authorization, clusters, cluster-policies,
-        # dashboards, database-instances, database-projects, dbsql-dashboards, directories,
-        # experiments, files, genie, instance-pools, jobs, notebooks, pipelines, queries,
-        # registered-models, repos, serving-endpoints, warehouses, vector-search-endpoints
-        workspace_type_mapping = {
-            # Workspace objects - these match the acl_path_prefix patterns from audit logs
-            "notebook": "notebooks",
-            "dashboard": "dbsql-dashboards",  # Legacy SQL dashboards (/dashboards/)
-            "lakeview_dashboard": "dashboards",  # Lakeview (AI/BI) dashboards (/dashboardsv3/)
-            "query": "queries",
-            "folder": "directories",  # /folders/ path prefix
-            "directory": "directories",  # /directories/ path prefix
-            "file": "files",
-            "repo": "repos",
-            "project": "repos",  # /projects/ path prefix maps to repos permission type
-            "workspace_object": "directories",  # Generic workspace object
-            # SQL Alerts
-            "alert": "alerts",  # /alerts/ and /alertsv2/ path prefixes
-            # Compute
-            "cluster": "clusters",
-            "clusterPolicy": "cluster-policies",
-            "instancePool": "instance-pools",
-            # Jobs & Pipelines
-            "jobs": "jobs",
-            "job": "jobs",
-            "pipelines": "pipelines",
-            "pipeline": "pipelines",
-            # SQL Warehouse
-            "warehouse": "warehouses",
-            # Apps & Serving
-            "apps": "apps",
-            "servingEndpoint": "serving-endpoints",
-            # Model Registry (workspace-level)
-            "registeredModel": "registered-models",
-            # Vector Search
-            "vectorSearchEndpoint": "vector-search-endpoints",
-            # MLflow
-            "mlflowExperiments": "experiments",  # /experiments/ path prefix
-            # Genie
-            "genieSpace": "genie",  # /genie/ path prefix
-            # Datarooms (if supported)
-            "dataroom": "datarooms",  # /datarooms/ path prefix
-        }
-        
-        # Check if this is a Unity Catalog object
-        is_uc_object = object_type in uc_object_types
-        is_secret_scope = object_type in secret_scope_types
-        
-        # Get approved permissions from preapproved objects table
-        print(f"  → Checking for pre-approved permissions in governance table")
-        approved_perms = spark.sql(f"""
-            SELECT permissions
-            FROM {catalog}.{schema}.governance_preapproved_objects
-            WHERE workspace_id = '{workspace_id}'
-            AND object_id = '{object_id}'
-            AND is_active = true
-        """).collect()
-        
-        if is_uc_object:
-            # Handle Unity Catalog objects using grants API
-            return _revert_uc_permissions(client, object_id, object_type, approved_perms)
-        elif is_secret_scope:
-            # Handle secret scopes using secrets.list_acls / secrets.put_acl / secrets.delete_acl API
-            return _revert_secret_scope_permissions(client, object_id, approved_perms)
-        else:
-            # Handle workspace objects using permissions API
-            return _revert_workspace_permissions(client, object_id, object_type, approved_perms, workspace_type_mapping)
-        
-    except Exception as e:
-        return (False, str(e))
+    # Object type categories
+    UC_OBJECT_TYPES = {
+        "catalog", "schema", "table", "volume", "function", "connection",
+        "externalLocation", "storageCredential", "share", "recipient",
+        "provider", "metastore", "ucRegisteredModel"
+    }
+    
+    SECRET_SCOPE_TYPES = {"secretScope"}
+    
+    # Mapping from governance object types to permissions API types
+    WORKSPACE_TYPE_MAP = {
+        # Workspace objects (from acl_path_prefix patterns)
+        "notebook": "notebooks",
+        "dashboard": "dbsql-dashboards",
+        "lakeview_dashboard": "dashboards",
+        "query": "queries",
+        "folder": "directories",
+        "directory": "directories",
+        "file": "files",
+        "repo": "repos",
+        "project": "repos",
+        "workspace_object": "directories",
+        "alert": "alerts",
+        # Compute
+        "cluster": "clusters",
+        "clusterPolicy": "cluster-policies",
+        "instancePool": "instance-pools",
+        # Jobs & Pipelines
+        "jobs": "jobs",
+        "job": "jobs",
+        "pipelines": "pipelines",
+        "pipeline": "pipelines",
+        # SQL
+        "warehouse": "warehouses",
+        # Apps & Serving
+        "apps": "apps",
+        "servingEndpoint": "serving-endpoints",
+        # Models & ML
+        "registeredModel": "registered-models",
+        "vectorSearchEndpoint": "vector-search-endpoints",
+        "mlflowExperiments": "experiments",
+        # Other
+        "genieSpace": "genie",
+        "dataroom": "datarooms",
+    }
+    
+    # Fetch pre-approved permissions from governance table
+    print(f"  → Checking for pre-approved permissions in governance table")
+    approved_perms = spark.sql(f"""
+        SELECT permissions
+        FROM {catalog}.{schema}.governance_preapproved_objects
+        WHERE workspace_id = '{workspace_id}'
+          AND object_id = '{object_id}'
+          AND is_active = true
+    """).collect()
+    
+    # Route to appropriate handler
+    if object_type in UC_OBJECT_TYPES:
+        return _revert_uc_permissions(client, object_id, object_type, approved_perms)
+    elif object_type in SECRET_SCOPE_TYPES:
+        return _revert_secret_scope_permissions(client, object_id, approved_perms)
+    else:
+        return _revert_workspace_permissions(client, object_id, object_type, approved_perms, WORKSPACE_TYPE_MAP)
 
 
 def _revert_uc_permissions(client, object_id: str, object_type: str, approved_perms) -> Tuple[bool, Optional[str]]:
@@ -1152,248 +1142,179 @@ def _revert_uc_permissions(client, object_id: str, object_type: str, approved_pe
 
 def _revert_secret_scope_permissions(client, scope_name: str, approved_perms) -> Tuple[bool, Optional[str]]:
     """
-    Revert secret scope ACL permissions using secrets API.
+    Revert secret scope ACL permissions to pre-approved state using secrets API.
     
-    This function:
-    1. Gets current ACLs from the secret scope
-    2. Compares with pre-approved ACLs from governance table  
-    3. Deletes ACLs not in approved list
-    4. Adds ACLs that are in approved but not current
+    Args:
+        client: Databricks WorkspaceClient
+        scope_name: Name of the secret scope
+        approved_perms: Pre-approved permissions from governance table
+    
+    Returns:
+        Tuple of (success: bool, message: str)
     """
+    from databricks.sdk.service.workspace import AclPermission
+    
+    # Fetch current ACLs from the secret scope
     try:
-        from databricks.sdk.service.workspace import AclPermission
-        
-        # Get current ACLs from the secret scope
-        try:
-            current_acls = list(client.secrets.list_acls(scope=scope_name))
-        except Exception as get_error:
-            return (False, f"Failed to get current secret scope ACLs: {str(get_error)}")
-        
-        # Build a map of current ACLs: {principal: permission}
-        current_acls_map = {}
-        owner_principal = None
-        
-        for acl in current_acls:
-            principal = acl.principal if hasattr(acl, 'principal') else None
-            permission = acl.permission.value if hasattr(acl, 'permission') and hasattr(acl.permission, 'value') else str(acl.permission)
-            
-            if principal:
-                current_acls_map[principal] = permission
-                # Track the owner (MANAGE permission typically indicates ownership)
-                if permission == 'MANAGE':
-                    owner_principal = principal
-        
-        print(f"  → Current secret scope ACLs: {len(current_acls_map)} principals")
-        
-        if not approved_perms or not approved_perms[0].permissions:
-            # No approved permissions - revoke all ACLs except owner
-            print(f"  → No pre-approved permissions found for secret scope")
-            print(f"  → Revoking all explicit ACLs (keeping owner with MANAGE)")
-            
-            revoked_count = 0
-            for principal, permission in current_acls_map.items():
-                # Skip owner - can't revoke MANAGE from owner
-                if permission == 'MANAGE' and principal == owner_principal:
-                    print(f"    - Skipping owner: {principal}")
-                    continue
-                
-                # Delete ACL for this principal
-                try:
-                    client.secrets.delete_acl(scope=scope_name, principal=principal)
-                    revoked_count += 1
-                    print(f"    - Revoked ACL for: {principal} (was {permission})")
-                except Exception as revoke_error:
-                    print(f"    - Warning: Failed to revoke from {principal}: {str(revoke_error)}")
-            
-            return (True, f"Revoked ACLs from {revoked_count} principals (owner retained)")
-        
-        # Pre-approved permissions found - sync to approved state
-        print(f"  → Pre-approved permissions found for secret scope")
-        print(f"  → Syncing to pre-approved ACL state")
-        
-        # Build a map of approved ACLs: {principal: permission}
-        approved_acls_map = {}
-        permissions_list = approved_perms[0].permissions
-        
-        for perm in permissions_list:
-            # Spark Row objects support direct attribute access
+        current_acls = list(client.secrets.list_acls(scope=scope_name))
+    except Exception as e:
+        return (False, f"Failed to get current secret scope ACLs: {e}")
+    
+    # Parse current ACLs: {principal: permission_string}
+    current_state = {}
+    for acl in current_acls:
+        principal = acl.principal
+        permission = acl.permission.value
+        current_state[principal] = permission
+    
+    print(f"  → Current ACLs: {len(current_state)} principals")
+    for principal, perm in current_state.items():
+        print(f"      {principal}: {perm}")
+    
+    # Determine target state from approved permissions
+    if approved_perms and approved_perms[0].permissions:
+        target_state = {}
+        for perm in approved_perms[0].permissions:
             principal = perm.principal_email
             permission = perm.permission_level
-            
-            if not principal or not permission:
-                continue
-            
-            approved_acls_map[principal] = permission
+            if principal and permission:
+                target_state[principal] = permission
         
-        print(f"  → Approved ACLs: {len(approved_acls_map)} principals")
+        print(f"  → Target state (pre-approved): {len(target_state)} principals")
+        for principal, perm in target_state.items():
+            print(f"      {principal}: {perm}")
+    else:
+        target_state = {}
+        print(f"  → Target state: empty (revoke all ACLs)")
+    
+    # Sync to target state
+    updated_count = 0
+    added_count = 0
+    removed_count = 0
+    
+    # Add or update ACLs to match target
+    for principal, target_perm in target_state.items():
+        current_perm = current_state.get(principal)
         
-        # Step 1: Update or add ACLs to match approved state
-        updated_count = 0
-        added_count = 0
-        
-        for principal, approved_permission in approved_acls_map.items():
-            current_permission = current_acls_map.get(principal)
-            
-            if current_permission != approved_permission:
-                try:
-                    # Put ACL (overwrites existing if present, creates if not)
-                    client.secrets.put_acl(
-                        scope=scope_name, 
-                        principal=principal, 
-                        permission=AclPermission(approved_permission)
-                    )
-                    if current_permission:
-                        updated_count += 1
-                        print(f"    - Updated {principal}: {current_permission} → {approved_permission}")
-                    else:
-                        added_count += 1
-                        print(f"    - Added {principal}: {approved_permission}")
-                except Exception as put_error:
-                    print(f"    - Warning: Failed to set ACL for {principal}: {str(put_error)}")
-        
-        # Step 2: Remove ACLs that are in current but not in approved (except owner)
-        removed_count = 0
-        for principal in current_acls_map.keys():
-            if principal not in approved_acls_map:
-                # Skip owner
-                if current_acls_map[principal] == 'MANAGE' and principal == owner_principal:
-                    print(f"    - Skipping owner removal: {principal}")
-                    continue
-                
-                try:
-                    client.secrets.delete_acl(scope=scope_name, principal=principal)
-                    removed_count += 1
-                    print(f"    - Removed unapproved principal: {principal}")
-                except Exception as remove_error:
-                    print(f"    - Warning: Failed to remove {principal}: {str(remove_error)}")
-        
-        summary = f"Synced secret scope ACLs: updated {updated_count}, added {added_count}, removed {removed_count}"
-        return (True, summary)
-        
-    except ImportError:
-        return (False, "Secrets SDK components not available")
-    except Exception as e:
-        return (False, f"Secret scope permission revert failed: {str(e)}")
+        if current_perm != target_perm:
+            try:
+                client.secrets.put_acl(
+                    scope=scope_name,
+                    principal=principal,
+                    permission=AclPermission(target_perm)
+                )
+                if current_perm:
+                    updated_count += 1
+                    print(f"    - Updated {principal}: {current_perm} → {target_perm}")
+                else:
+                    added_count += 1
+                    print(f"    - Added {principal}: {target_perm}")
+            except Exception as e:
+                print(f"    - Warning: Failed to set ACL for {principal}: {e}")
+    
+    # Remove ACLs not in target
+    for principal in current_state:
+        if principal not in target_state:
+            try:
+                client.secrets.delete_acl(scope=scope_name, principal=principal)
+                removed_count += 1
+                print(f"    - Removed {principal}")
+            except Exception as e:
+                print(f"    - Warning: Failed to remove {principal}: {e}")
+    
+    return (True, f"Synced secret scope ACLs: updated {updated_count}, added {added_count}, removed {removed_count}")
 
 
 def _revert_workspace_permissions(client, object_id: str, object_type: str, approved_perms, type_mapping: dict) -> Tuple[bool, Optional[str]]:
     """
-    Revert workspace object permissions using permissions API.
+    Revert workspace object permissions to pre-approved state using permissions API.
     
     Reference: https://databricks-sdk-py.readthedocs.io/en/latest/workspace/iam/permissions.html
     
-    Uses permissions.set() with AccessControlRequest objects.
-    Handles different principal types (users, groups, service principals) correctly.
+    Args:
+        client: Databricks WorkspaceClient
+        object_id: Object ID (numeric ID or path)
+        object_type: Type of workspace object (notebook, directory, job, etc.)
+        approved_perms: Pre-approved permissions from governance table
+        type_mapping: Mapping from object_type to permissions API type
+    
+    Returns:
+        Tuple of (success: bool, message: str)
     """
-    try:
-        from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
+    from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
+    
+    # Map object type to permissions API type
+    permissions_api_type = type_mapping.get(object_type)
+    if not permissions_api_type:
+        return (False, f"Unsupported object type: {object_type}")
+    
+    # Lakeview dashboards don't support direct permissions API
+    if object_type == 'lakeview_dashboard':
+        return (False, "Lakeview dashboards inherit permissions from workspace folder")
+    
+    # Determine target ACLs
+    if approved_perms and approved_perms[0].permissions:
+        # Build ACL list from pre-approved permissions
+        acl_list = []
         
-        permissions_object_type = type_mapping.get(object_type)
-        if not permissions_object_type:
-            return (False, f"Unsupported object type for permission revert: {object_type}")
-        
-        # Special handling for Lakeview dashboards - they may not support permissions API
-        if object_type == 'lakeview_dashboard':
-            print(f"  → Lakeview dashboards use workspace object permissions")
-            print(f"  → Attempting to revert permissions via workspace path")
-            return (False, "Lakeview dashboards don't support direct permission revert. Permissions are inherited from workspace folder.")
-        
-        if not approved_perms or not approved_perms[0].permissions:
-            # No approved permissions found - remove all explicit permissions
-            print(f"  → No pre-approved permissions found")
-            print(f"  → Removing all explicit permissions (keeping only inherited)")
+        print(f"  → Building target ACLs from pre-approved permissions")
+        for perm in approved_perms[0].permissions:
+            principal = perm.principal_email
+            level = perm.permission_level
+            ptype = getattr(perm, 'principal_type', None) or _detect_principal_type(principal)
             
-            client.permissions.set(
-                request_object_type=permissions_object_type,
-                request_object_id=object_id,
-                access_control_list=[]
-            )
-            return (True, "No pre-approved permissions found, removed all explicit permissions")
-        
-        # Pre-approved permissions found - reset to approved state
-        print(f"  → Pre-approved permissions found")
-        print(f"  → Resetting to pre-approved state")
-        
-        permissions_list = approved_perms[0].permissions
-        
-        acl_requests = []
-        for perm in permissions_list:
-            # Spark Row objects support direct attribute access
-            principal_email = perm.principal_email
-            permission_level_str = perm.permission_level
-            # principal_type may be None if not stored
-            principal_type = getattr(perm, 'principal_type', None)
-            
-            if not principal_email or not permission_level_str:
-                print(f"    - Warning: Skipping invalid permission entry")
+            if not principal or not level:
                 continue
             
             # Build AccessControlRequest based on principal type
-            # Reference: AccessControlRequest(group_name=..., permission_level=PermissionLevel.CAN_RUN)
-            if principal_type:
-                if principal_type == 'user':
-                    acl_requests.append(AccessControlRequest(
-                        user_name=principal_email,
-                        permission_level=PermissionLevel(permission_level_str)
-                    ))
-                elif principal_type == 'service_principal':
-                    acl_requests.append(AccessControlRequest(
-                        service_principal_name=principal_email,
-                        permission_level=PermissionLevel(permission_level_str)
-                    ))
-                elif principal_type == 'group':
-                    acl_requests.append(AccessControlRequest(
-                        group_name=principal_email,
-                        permission_level=PermissionLevel(permission_level_str)
-                    ))
-                else:
-                    # Unknown type, fall back to detection
-                    detected_type = _detect_principal_type(principal_email)
-                    if detected_type == 'user':
-                        acl_requests.append(AccessControlRequest(
-                            user_name=principal_email,
-                            permission_level=PermissionLevel(permission_level_str)
-                        ))
-                    elif detected_type == 'service_principal':
-                        acl_requests.append(AccessControlRequest(
-                            service_principal_name=principal_email,
-                            permission_level=PermissionLevel(permission_level_str)
-                        ))
-                    else:
-                        acl_requests.append(AccessControlRequest(
-                            group_name=principal_email,
-                            permission_level=PermissionLevel(permission_level_str)
-                        ))
-            else:
-                # Fallback: Detect principal type based on naming conventions
-                detected_type = _detect_principal_type(principal_email)
-                if detected_type == 'user':
-                    acl_requests.append(AccessControlRequest(
-                        user_name=principal_email,
-                        permission_level=PermissionLevel(permission_level_str)
-                    ))
-                elif detected_type == 'service_principal':
-                    acl_requests.append(AccessControlRequest(
-                        service_principal_name=principal_email,
-                        permission_level=PermissionLevel(permission_level_str)
-                    ))
-                else:
-                    acl_requests.append(AccessControlRequest(
-                        group_name=principal_email,
-                        permission_level=PermissionLevel(permission_level_str)
-                    ))
+            acl = _build_access_control_request(principal, level, ptype)
+            if acl:
+                acl_list.append(acl)
+                print(f"      {principal} ({ptype}): {level}")
         
-        # Set permissions to pre-approved state
-        client.permissions.set(
-            request_object_type=permissions_object_type,
-            request_object_id=object_id,
-            access_control_list=acl_requests
-        )
-        
-        return (True, f"Reset permissions to pre-approved state ({len(acl_requests)} ACLs)")
-        
-    except Exception as e:
-        return (False, str(e))
+        print(f"  → Setting {len(acl_list)} ACLs")
+    else:
+        # No approved permissions - clear all explicit permissions
+        acl_list = []
+        print(f"  → No pre-approved permissions found")
+        print(f"  → Clearing all explicit permissions")
+    
+    # Apply permissions
+    client.permissions.set(
+        request_object_type=permissions_api_type,
+        request_object_id=object_id,
+        access_control_list=acl_list
+    )
+    
+    return (True, f"Set {len(acl_list)} ACLs on {permissions_api_type}/{object_id}")
+
+
+def _build_access_control_request(principal: str, permission_level: str, principal_type: str):
+    """
+    Build an AccessControlRequest for the given principal.
+    
+    Args:
+        principal: Principal identifier (email, group name, or service principal ID)
+        permission_level: Permission level string (CAN_VIEW, CAN_RUN, CAN_MANAGE, etc.)
+        principal_type: Type of principal (user, group, service_principal)
+    
+    Returns:
+        AccessControlRequest or None if invalid
+    """
+    from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
+    
+    try:
+        level = PermissionLevel(permission_level)
+    except ValueError:
+        print(f"    - Warning: Unknown permission level '{permission_level}', skipping")
+        return None
+    
+    if principal_type == 'user':
+        return AccessControlRequest(user_name=principal, permission_level=level)
+    elif principal_type == 'service_principal':
+        return AccessControlRequest(service_principal_name=principal, permission_level=level)
+    else:  # group or unknown
+        return AccessControlRequest(group_name=principal, permission_level=level)
 
 # COMMAND ----------
 
