@@ -1012,221 +1012,143 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
 
 def _revert_uc_permissions(client, object_id: str, object_type: str, approved_perms) -> Tuple[bool, Optional[str]]:
     """
-    Revert Unity Catalog object permissions using grants API.
+    Revert Unity Catalog object permissions to pre-approved state using grants API.
     
     Reference: https://databricks-sdk-py.readthedocs.io/en/latest/workspace/catalog/grants.html
     
-    UC objects use grants (OWNER, ALL_PRIVILEGES, USE_CATALOG, USE_SCHEMA, SELECT, MODIFY, etc.)
+    Args:
+        client: Databricks WorkspaceClient
+        object_id: Full name of the UC object (e.g., "catalog.schema.table")
+        object_type: Type of UC object (catalog, schema, table, etc.)
+        approved_perms: Pre-approved permissions from governance table
     
-    This function:
-    1. Gets current grants from UC using grants.get()
-    2. Compares with pre-approved grants from governance table
-    3. Revokes grants not in approved list using grants.update()
-    4. Adds grants that are in approved but not current
+    Returns:
+        Tuple of (success: bool, message: str)
     """
+    from databricks.sdk.service.catalog import PermissionsChange, Privilege
+    
+    # Map governance object types to UC securable type strings
+    SECURABLE_TYPE_MAP = {
+        "catalog": "catalog",
+        "schema": "schema",
+        "table": "table",
+        "volume": "volume",
+        "function": "function",
+        "connection": "connection",
+        "externalLocation": "external_location",
+        "storageCredential": "storage_credential",
+        "share": "share",
+        "recipient": "recipient",
+        "provider": "provider",
+        "metastore": "metastore",
+        "ucRegisteredModel": "function",
+    }
+    
+    securable_type = SECURABLE_TYPE_MAP.get(object_type)
+    if not securable_type:
+        return (False, f"Unsupported UC object type: {object_type}")
+    
+    # Fetch current grants from Unity Catalog
     try:
-        from databricks.sdk.service.catalog import PermissionsChange, Privilege
-        
-        # Map object types to securable type strings
-        # SDK grants.get() and grants.update() accept string for securable_type parameter
-        securable_type_mapping = {
-            "catalog": "catalog",
-            "schema": "schema",
-            "table": "table",
-            "volume": "volume",
-            "function": "function",
-            "connection": "connection",
-            "externalLocation": "external_location",
-            "storageCredential": "storage_credential",
-            "share": "share",
-            "recipient": "recipient",
-            "provider": "provider",
-            "metastore": "metastore",
-            "ucRegisteredModel": "function",  # UC models use function securable type
-        }
-        
-        securable_type = securable_type_mapping.get(object_type)
-        if not securable_type:
-            return (False, f"Unsupported UC object type for permission revert: {object_type}")
-        
-        # Get current grants from Unity Catalog
-        try:
-            current_grants = client.grants.get(securable_type=securable_type, full_name=object_id)
-        except Exception as get_error:
-            return (False, f"Failed to get current UC grants: {str(get_error)}")
-        
-        # Build a map of current grants: {principal: set(Privilege enums)}
-        # Also keep string names for comparison with approved perms from DB
-        current_grants_map = {}  # {principal: set(privilege_name_strings)}
-        current_privilege_enums = {}  # {principal: {priv_name: Privilege enum}}
-        owner_principal = None
-        
-        if current_grants.privilege_assignments:
-            for assignment in current_grants.privilege_assignments:
-                principal = assignment.principal
-                privileges = set()
-                priv_enum_map = {}
-                
-                if assignment.privileges:
-                    for priv_info in assignment.privileges:
-                        # priv_info is PrivilegeInfo with .privilege attribute (Privilege enum)
-                        priv_enum = priv_info.privilege
-                        priv_name = priv_enum.value if priv_enum else str(priv_info)
-                        privileges.add(priv_name)
-                        priv_enum_map[priv_name] = priv_enum
-                        
-                        # Track the owner
-                        if priv_name == 'OWNER' or priv_name == 'ALL_PRIVILEGES':
-                            owner_principal = principal
-                
-                current_grants_map[principal] = privileges
-                current_privilege_enums[principal] = priv_enum_map
-        
-        print(f"  → Current grants: {len(current_grants_map)} principals")
-        
-        if not approved_perms or not approved_perms[0].permissions:
-            # No approved permissions - revoke all grants except owner
-            print(f"  → No pre-approved permissions found for UC object")
-            print(f"  → Revoking all explicit grants (keeping owner)")
+        current_grants = client.grants.get(securable_type=securable_type, full_name=object_id)
+    except Exception as e:
+        return (False, f"Failed to get current UC grants: {e}")
+    
+    # Parse current grants into a structured format
+    # {principal: {"privileges": set(str), "enums": {str: Privilege}}}
+    current_state = {}
+    
+    if current_grants.privilege_assignments:
+        for assignment in current_grants.privilege_assignments:
+            principal = assignment.principal
+            privileges = set()
+            enum_map = {}
             
-            revoked_count = 0
-            for principal, privileges in current_grants_map.items():
-                # Skip owner - can't revoke ownership
-                if 'OWNER' in privileges or principal == owner_principal:
-                    print(f"    - Skipping owner: {principal}")
-                    continue
-                
-                # Revoke all privileges for this principal
-                privs_to_revoke = [p for p in privileges if p != 'OWNER']
-                if privs_to_revoke:
-                    try:
-                        # Get the Privilege enums from our map
-                        priv_enums = [current_privilege_enums[principal][p] for p in privs_to_revoke 
-                                     if p in current_privilege_enums.get(principal, {})]
-                        
-                        if priv_enums:
-                            changes = [PermissionsChange(remove=priv_enums, principal=principal)]
-                            client.grants.update(
-                                securable_type=securable_type,
-                                full_name=object_id,
-                                changes=changes
-                            )
-                            revoked_count += 1
-                            print(f"    - Revoked {len(priv_enums)} privileges from: {principal}")
-                    except Exception as revoke_error:
-                        print(f"    - Warning: Failed to revoke from {principal}: {str(revoke_error)}")
+            for priv_enum in (assignment.privileges or []):
+                priv_name = priv_enum.value
+                privileges.add(priv_name)
+                enum_map[priv_name] = priv_enum
             
-            return (True, f"Revoked grants from {revoked_count} principals (owner retained)")
-        
-        # Pre-approved permissions found - sync to approved state
-        print(f"  → Pre-approved permissions found for UC object")
-        print(f"  → Syncing to pre-approved grants state")
-        
-        # Build a map of approved grants: {principal: set(privilege_names)}
-        approved_grants_map = {}
-        permissions_list = approved_perms[0].permissions
-        
-        for perm in permissions_list:
-            # Spark Row objects support direct attribute access
+            current_state[principal] = {"privileges": privileges, "enums": enum_map}
+    
+    print(f"  → Current grants: {len(current_state)} principals")
+    for principal, data in current_state.items():
+        print(f"      {principal}: {data['privileges']}")
+    
+    # Determine target state from approved permissions
+    if approved_perms and approved_perms[0].permissions:
+        # Use pre-approved permissions as target state
+        target_state = {}
+        for perm in approved_perms[0].permissions:
             principal = perm.principal_email
             privilege = perm.permission_level
-            
-            if not principal or not privilege:
-                continue
-            
-            if principal not in approved_grants_map:
-                approved_grants_map[principal] = set()
-            approved_grants_map[principal].add(privilege)
+            if principal and privilege:
+                if principal not in target_state:
+                    target_state[principal] = set()
+                target_state[principal].add(privilege)
         
-        print(f"  → Approved grants: {len(approved_grants_map)} principals")
+        print(f"  → Target state (pre-approved): {len(target_state)} principals")
+        for principal, privs in target_state.items():
+            print(f"      {principal}: {privs}")
+    else:
+        # No pre-approved permissions - target is empty (revoke all except OWNER)
+        target_state = {}
+        print(f"  → Target state: empty (revoke all grants except OWNER)")
+    
+    # Calculate changes needed
+    revoked_count = 0
+    added_count = 0
+    
+    # Process each principal in current state
+    for principal, data in current_state.items():
+        current_privs = data["privileges"]
+        target_privs = target_state.get(principal, set())
         
-        # Step 1: Revoke grants that are in current but not in approved
-        revoked_count = 0
-        for principal, current_privs in current_grants_map.items():
-            # Skip owner
-            if 'OWNER' in current_privs:
-                continue
-            
-            approved_privs = approved_grants_map.get(principal, set())
-            privs_to_revoke = current_privs - approved_privs - {'OWNER'}
-            
-            if privs_to_revoke:
-                try:
-                    # Get Privilege enums from our map for privileges to revoke
-                    priv_enums = [current_privilege_enums[principal][p] for p in privs_to_revoke
-                                 if p in current_privilege_enums.get(principal, {})]
-                    
-                    if priv_enums:
-                        changes = [PermissionsChange(remove=priv_enums, principal=principal)]
-                        client.grants.update(
-                            securable_type=securable_type,
-                            full_name=object_id,
-                            changes=changes
-                        )
-                        revoked_count += len(priv_enums)
-                        print(f"    - Revoked {privs_to_revoke} from: {principal}")
-                except Exception as revoke_error:
-                    print(f"    - Warning: Failed to revoke from {principal}: {str(revoke_error)}")
+        # Never revoke OWNER privilege - it's managed separately
+        privs_to_revoke = current_privs - target_privs - {"OWNER"}
         
-        # Step 2: Add grants that are in approved but not in current
-        added_count = 0
-        for principal, approved_privs in approved_grants_map.items():
-            current_privs = current_grants_map.get(principal, set())
-            privs_to_add = approved_privs - current_privs - {'OWNER', 'ALL_PRIVILEGES'}
-            
-            if privs_to_add:
-                try:
-                    # Convert privilege name strings to Privilege enums
-                    priv_enums = []
-                    for p in privs_to_add:
-                        try:
-                            priv_enums.append(Privilege(p))
-                        except ValueError:
-                            print(f"    - Warning: Unknown privilege '{p}', skipping")
-                    
-                    if priv_enums:
-                        changes = [PermissionsChange(add=priv_enums, principal=principal)]
-                        client.grants.update(
-                            securable_type=securable_type,
-                            full_name=object_id,
-                            changes=changes
-                        )
-                        added_count += len(priv_enums)
-                        print(f"    - Added {privs_to_add} to: {principal}")
-                except Exception as add_error:
-                    print(f"    - Warning: Failed to add grants to {principal}: {str(add_error)}")
+        if privs_to_revoke:
+            try:
+                enums_to_revoke = [data["enums"][p] for p in privs_to_revoke if p in data["enums"]]
+                if enums_to_revoke:
+                    client.grants.update(
+                        securable_type=securable_type,
+                        full_name=object_id,
+                        changes=[PermissionsChange(remove=enums_to_revoke, principal=principal)]
+                    )
+                    revoked_count += len(enums_to_revoke)
+                    print(f"    - Revoked from {principal}: {privs_to_revoke}")
+            except Exception as e:
+                print(f"    - Warning: Failed to revoke from {principal}: {e}")
+    
+    # Process each principal in target state (for additions)
+    for principal, target_privs in target_state.items():
+        current_privs = current_state.get(principal, {}).get("privileges", set())
         
-        # Step 3: Revoke all grants from principals not in approved list (except owner)
-        removed_principals = 0
-        for principal in current_grants_map.keys():
-            if principal not in approved_grants_map and principal != owner_principal:
-                current_privs = current_grants_map[principal]
-                privs_to_revoke = current_privs - {'OWNER'}
-                
-                if privs_to_revoke:
+        # Don't try to grant OWNER or ALL_PRIVILEGES - they require special handling
+        privs_to_add = target_privs - current_privs - {"OWNER", "ALL_PRIVILEGES"}
+        
+        if privs_to_add:
+            try:
+                enums_to_add = []
+                for p in privs_to_add:
                     try:
-                        priv_enums = [current_privilege_enums[principal][p] for p in privs_to_revoke
-                                     if p in current_privilege_enums.get(principal, {})]
-                        
-                        if priv_enums:
-                            changes = [PermissionsChange(remove=priv_enums, principal=principal)]
-                            client.grants.update(
-                                securable_type=securable_type,
-                                full_name=object_id,
-                                changes=changes
-                            )
-                            removed_principals += 1
-                            print(f"    - Removed unapproved principal: {principal}")
-                    except Exception as remove_error:
-                        print(f"    - Warning: Failed to remove {principal}: {str(remove_error)}")
-        
-        summary = f"Synced UC grants: revoked {revoked_count} privileges, added {added_count} privileges, removed {removed_principals} unapproved principals"
-        return (True, summary)
-        
-    except ImportError:
-        return (False, "Unity Catalog SDK components not available")
-    except Exception as e:
-        return (False, f"UC permission revert failed: {str(e)}")
+                        enums_to_add.append(Privilege(p))
+                    except ValueError:
+                        print(f"    - Warning: Unknown privilege '{p}', skipping")
+                
+                if enums_to_add:
+                    client.grants.update(
+                        securable_type=securable_type,
+                        full_name=object_id,
+                        changes=[PermissionsChange(add=enums_to_add, principal=principal)]
+                    )
+                    added_count += len(enums_to_add)
+                    print(f"    - Added to {principal}: {privs_to_add}")
+            except Exception as e:
+                print(f"    - Warning: Failed to add grants to {principal}: {e}")
+    
+    return (True, f"Synced UC grants: revoked {revoked_count}, added {added_count} privileges")
 
 def _revert_secret_scope_permissions(client, scope_name: str, approved_perms) -> Tuple[bool, Optional[str]]:
     """
