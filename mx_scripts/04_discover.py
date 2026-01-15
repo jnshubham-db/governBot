@@ -157,17 +157,39 @@ def _detect_principal_type(principal: str) -> str:
         return 'group'
 
 
-def get_permissions_safe(client, object_type: str, object_id: str, debug_sample: bool = False) -> tuple:
+def get_permissions_safe(client, object_type: str, object_id: str, debug_sample: bool = False, max_retries: int = 3, retry_delay: float = 5.0) -> tuple:
     """
     Get permissions for an object, returning (owner_email, permissions_list).
     Returns ('unknown', []) on error.
+    
+    Includes retry logic for transient errors (DEADLINE_EXCEEDED, timeouts, etc.)
+    
+    Args:
+        client: WorkspaceClient instance
+        object_type: Type of object (e.g., 'notebooks', 'directories')
+        object_id: Object ID
+        debug_sample: If True, print debug info
+        max_retries: Maximum number of retry attempts (default: 3)
+        retry_delay: Delay between retries in seconds (default: 5.0)
+    
+    Returns:
+        Tuple of (owner_email, permissions_list)
     """
-    try:
-        permissions = client.permissions.get(object_type, object_id)
+    import time
+    
+    # Transient error patterns that should trigger retry
+    TRANSIENT_ERRORS = ['DEADLINE_EXCEEDED', 'UNAVAILABLE', 'timeout', 'temporarily unavailable', 'rate limit']
+    
+    def is_transient_error(error_msg: str) -> bool:
+        """Check if error is transient and should be retried."""
+        error_lower = error_msg.lower()
+        return any(pattern.lower() in error_lower for pattern in TRANSIENT_ERRORS)
+    
+    def parse_permissions(permissions) -> tuple:
+        """Parse permissions response into (owner_email, acl_list)."""
         acl_list = []
         owner_email = 'unknown'
         
-        # Debug: Print first few permission responses
         if debug_sample:
             print(f"    DEBUG: Fetching permissions for {object_type}/{object_id}")
             print(f"    DEBUG: Response has ACL: {permissions.access_control_list is not None}")
@@ -176,42 +198,29 @@ def get_permissions_safe(client, object_type: str, object_id: str, debug_sample:
         
         if permissions.access_control_list:
             for acl in permissions.access_control_list:
-                principal_email = None
-                if acl.user_name:
-                    principal_email = acl.user_name
-                elif acl.service_principal_name:
-                    principal_email = acl.service_principal_name
-                elif acl.group_name:
-                    # Also capture group permissions
-                    principal_email = acl.group_name
+                principal_email = acl.user_name or acl.service_principal_name or acl.group_name
                 
-                # Determine principal type for more accurate remediation
-                principal_type = 'user'
+                # Determine principal type
                 if acl.user_name:
                     principal_type = 'user'
                 elif acl.service_principal_name:
                     principal_type = 'service_principal'
-                elif acl.group_name:
+                else:
                     principal_type = 'group'
                 
                 if principal_email and acl.all_permissions:
                     for perm in acl.all_permissions:
-                        # Debug: Show what we're seeing
                         if debug_sample:
                             inherited_str = "inherited" if perm.inherited else "direct"
                             print(f"      - {principal_email} ({principal_type}): {perm.permission_level.value} ({inherited_str})")
                         
-                        # Check if this principal is the owner (has CAN_MANAGE, prefer non-inherited)
+                        # Check for owner (CAN_MANAGE, prefer non-inherited)
                         if perm.permission_level.value == 'CAN_MANAGE':
                             if not perm.inherited:
                                 owner_email = principal_email
                             elif owner_email == 'unknown':
-                                # Fallback to inherited owner if no direct owner found
                                 owner_email = principal_email
                         
-                        # Include ALL permissions (both inherited and direct)
-                        # This matches the behavior of the original sample.py
-                        # Now also includes principal_type for more accurate remediation
                         acl_list.append(Row(
                             principal_email=principal_email,
                             principal_type=principal_type,
@@ -222,67 +231,95 @@ def get_permissions_safe(client, object_type: str, object_id: str, debug_sample:
             print(f"    DEBUG: Extracted {len(acl_list)} permissions, owner: {owner_email}")
         
         return (owner_email, acl_list)
-    except Exception as e:
-        # More detailed error logging
-        print(f"  ⚠️  Permission fetch failed for {object_type}/{object_id}: {str(e)}")
-        return ('unknown', [])
+    
+    # Retry loop
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            permissions = client.permissions.get(object_type, object_id)
+            return parse_permissions(permissions)
+        except Exception as e:
+            last_error = e
+            error_msg = str(e)
+            
+            # Check if this is a transient error worth retrying
+            if is_transient_error(error_msg) and attempt < max_retries - 1:
+                wait_time = retry_delay * (attempt + 1)  # Exponential backoff
+                print(f"  ⚠️  Transient error for {object_type}/{object_id}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait_time)
+                continue
+            else:
+                # Non-transient error or last attempt - log and return empty
+                break
+    
+    # All retries exhausted or non-transient error
+    print(f"  ⚠️  Permission fetch failed for {object_type}/{object_id}: {str(last_error)}")
+    return ('unknown', [])
 
 # COMMAND ----------
 
-def get_uc_grants_safe(client, securable_type: str, full_name: str) -> tuple:
+def get_uc_grants_safe(client, securable_type: str, full_name: str, max_retries: int = 3, retry_delay: float = 5.0) -> tuple:
     """
     Get Unity Catalog grants for a securable object using grants.get API.
     Returns (owner_email, permissions_list).
+    
+    Includes retry logic for transient errors (DEADLINE_EXCEEDED, timeouts, etc.)
     
     Args:
         client: WorkspaceClient instance
         securable_type: Type of securable (e.g., 'CATALOG', 'SCHEMA', 'TABLE', 'VOLUME', 'FUNCTION', 'REGISTERED_MODEL')
         full_name: Full name of the object (e.g., 'catalog.schema.table')
+        max_retries: Maximum number of retry attempts (default: 3)
+        retry_delay: Delay between retries in seconds (default: 5.0)
     
     Returns:
         Tuple of (owner_email, list of permission Rows)
     """
-    try:
-        from databricks.sdk.service.catalog import SecurableType
-        
-        # Map string to SecurableType enum - use .value for the API call
-        securable_type_map = {
-            'CATALOG': SecurableType.CATALOG.value,
-            'SCHEMA': SecurableType.SCHEMA.value,
-            'TABLE': SecurableType.TABLE.value,
-            'VOLUME': SecurableType.VOLUME.value,
-            'FUNCTION': SecurableType.FUNCTION.value,
-            'REGISTERED_MODEL': SecurableType.FUNCTION.value,  # Models use FUNCTION type
-            'EXTERNAL_LOCATION': SecurableType.EXTERNAL_LOCATION.value,
-            'STORAGE_CREDENTIAL': SecurableType.STORAGE_CREDENTIAL.value,
-            'CONNECTION': SecurableType.CONNECTION.value,
-            'SHARE': SecurableType.SHARE.value,
-            'RECIPIENT': SecurableType.RECIPIENT.value,
-            'PROVIDER': SecurableType.PROVIDER.value,
-            'METASTORE': SecurableType.METASTORE.value,
-        }
-        
-        sec_type = securable_type_map.get(securable_type.upper())
-        if not sec_type:
-            return ('unknown', [])
-        
-        grants = client.grants.get(securable_type=sec_type, full_name=full_name)
-        
+    import time
+    from databricks.sdk.service.catalog import SecurableType
+    
+    # Transient error patterns that should trigger retry
+    TRANSIENT_ERRORS = ['DEADLINE_EXCEEDED', 'UNAVAILABLE', 'timeout', 'temporarily unavailable', 'rate limit']
+    
+    def is_transient_error(error_msg: str) -> bool:
+        error_lower = error_msg.lower()
+        return any(pattern.lower() in error_lower for pattern in TRANSIENT_ERRORS)
+    
+    # Map string to SecurableType enum - use .value for the API call
+    SECURABLE_TYPE_MAP = {
+        'CATALOG': SecurableType.CATALOG.value,
+        'SCHEMA': SecurableType.SCHEMA.value,
+        'TABLE': SecurableType.TABLE.value,
+        'VOLUME': SecurableType.VOLUME.value,
+        'FUNCTION': SecurableType.FUNCTION.value,
+        'REGISTERED_MODEL': SecurableType.FUNCTION.value,
+        'EXTERNAL_LOCATION': SecurableType.EXTERNAL_LOCATION.value,
+        'STORAGE_CREDENTIAL': SecurableType.STORAGE_CREDENTIAL.value,
+        'CONNECTION': SecurableType.CONNECTION.value,
+        'SHARE': SecurableType.SHARE.value,
+        'RECIPIENT': SecurableType.RECIPIENT.value,
+        'PROVIDER': SecurableType.PROVIDER.value,
+        'METASTORE': SecurableType.METASTORE.value,
+    }
+    
+    sec_type = SECURABLE_TYPE_MAP.get(securable_type.upper())
+    if not sec_type:
+        return ('unknown', [])
+    
+    def parse_grants(grants) -> tuple:
+        """Parse grants response into (owner_email, acl_list)."""
         acl_list = []
         owner_email = 'unknown'
         
         if grants and grants.privilege_assignments:
             for assignment in grants.privilege_assignments:
-                principal = assignment.principal if hasattr(assignment, 'principal') else None
+                principal = assignment.principal
                 if principal and assignment.privileges:
-                    # Determine principal type based on naming conventions
-                    # UC grants don't explicitly tell us if it's user/group/sp
                     principal_type = _detect_principal_type(principal)
                     
                     for privilege in assignment.privileges:
                         priv_name = privilege.privilege.value if hasattr(privilege.privilege, 'value') else str(privilege.privilege)
                         
-                        # Check for ownership
                         if priv_name in ['ALL_PRIVILEGES', 'OWNER']:
                             owner_email = principal
                         
@@ -293,30 +330,66 @@ def get_uc_grants_safe(client, securable_type: str, full_name: str) -> tuple:
                         ))
         
         return (owner_email, acl_list)
-    except Exception as e:
-        # Silently fail for permission errors
-        return ('unknown', [])
+    
+    # Retry loop
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            grants = client.grants.get(securable_type=sec_type, full_name=full_name)
+            return parse_grants(grants)
+        except Exception as e:
+            last_error = e
+            error_msg = str(e)
+            
+            if is_transient_error(error_msg) and attempt < max_retries - 1:
+                wait_time = retry_delay * (attempt + 1)
+                print(f"  ⚠️  Transient error for {securable_type}/{full_name}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait_time)
+                continue
+            else:
+                break
+    
+    # Silently fail for permission errors (don't log non-transient errors)
+    return ('unknown', [])
 
 # COMMAND ----------
 
-def get_secret_acls_safe(client, scope_name: str) -> tuple:
+def get_secret_acls_safe(client, scope_name: str, max_retries: int = 3, retry_delay: float = 5.0) -> tuple:
     """
     Get secret scope ACLs using secrets.list_acls API.
     Returns (owner_email, permissions_list).
+    
+    Includes retry logic for transient errors (DEADLINE_EXCEEDED, timeouts, etc.)
+    
+    Args:
+        client: WorkspaceClient instance
+        scope_name: Name of the secret scope
+        max_retries: Maximum number of retry attempts (default: 3)
+        retry_delay: Delay between retries in seconds (default: 5.0)
+    
+    Returns:
+        Tuple of (owner_email, list of permission Rows)
     """
-    try:
+    import time
+    
+    TRANSIENT_ERRORS = ['DEADLINE_EXCEEDED', 'UNAVAILABLE', 'timeout', 'temporarily unavailable', 'rate limit']
+    
+    def is_transient_error(error_msg: str) -> bool:
+        error_lower = error_msg.lower()
+        return any(pattern.lower() in error_lower for pattern in TRANSIENT_ERRORS)
+    
+    def parse_acls(acls) -> tuple:
+        """Parse ACLs into (owner_email, acl_list)."""
         acl_list = []
         owner_email = 'unknown'
         
-        for acl in client.secrets.list_acls(scope=scope_name):
-            principal = acl.principal if hasattr(acl, 'principal') else None
-            permission = acl.permission.value if hasattr(acl, 'permission') and hasattr(acl.permission, 'value') else str(acl.permission)
+        for acl in acls:
+            principal = acl.principal
+            permission = acl.permission.value
             
             if principal:
-                # Determine principal type
                 principal_type = _detect_principal_type(principal)
                 
-                # MANAGE permission indicates owner
                 if permission == 'MANAGE':
                     owner_email = principal
                 
@@ -327,8 +400,26 @@ def get_secret_acls_safe(client, scope_name: str) -> tuple:
                 ))
         
         return (owner_email, acl_list)
-    except Exception as e:
-        return ('unknown', [])
+    
+    # Retry loop
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            acls = list(client.secrets.list_acls(scope=scope_name))
+            return parse_acls(acls)
+        except Exception as e:
+            last_error = e
+            error_msg = str(e)
+            
+            if is_transient_error(error_msg) and attempt < max_retries - 1:
+                wait_time = retry_delay * (attempt + 1)
+                print(f"  ⚠️  Transient error for secret scope/{scope_name}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait_time)
+                continue
+            else:
+                break
+    
+    return ('unknown', [])
 
 # COMMAND ----------
 

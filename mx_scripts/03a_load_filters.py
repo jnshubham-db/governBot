@@ -231,25 +231,25 @@ acl_filters_raw = [
     ["secret_scope_acl_put", "secrets", "putAcl", "secretScope", "request_params.scope", "request_params.scope", "REVERT_PERMISSION", {}, True, "Secret Scope ACL put/change"],
     ["secret_scope_acl_delete", "secrets", "deleteAcl", "secretScope", "request_params.scope", "request_params.scope", "REVERT_PERMISSION", {}, True, "Secret Scope ACL deletion"],
     
-    # Workspace ACL - object_type determined dynamically from acl_path_prefix pattern
-    # acl_path_prefix patterns: /alerts/, /alertsv2/, /dashboards/, /dashboardsv3/, /datarooms/,
+    # Workspace ACL - object_type determined dynamically from aclChangeResourceName pattern
+    # aclChangeResourceName patterns: /alerts/, /alertsv2/, /dashboards/, /dashboardsv3/, /datarooms/,
     # /directories/, /experiments/, /files/, /folders/, /genie/, /notebooks/, /projects/, /queries/, /repos/
     ["workspace_acl_change", "workspace", "changeWorkspaceAcl", 
      """CASE 
-        WHEN request_params.acl_path_prefix LIKE 'alerts/%' THEN 'alert'
-        WHEN request_params.acl_path_prefix LIKE 'alertsv2/%' THEN 'alert'
-        WHEN request_params.acl_path_prefix LIKE 'dashboards/%' THEN 'dashboard'
-        WHEN request_params.acl_path_prefix LIKE 'dashboardsv3/%' THEN 'lakeview_dashboard'
-        WHEN request_params.acl_path_prefix LIKE 'datarooms/%' THEN 'dataroom'
-        WHEN request_params.acl_path_prefix LIKE 'directories/%' THEN 'directory'
-        WHEN request_params.acl_path_prefix LIKE 'experiments/%' THEN 'mlflowExperiments'
-        WHEN request_params.acl_path_prefix LIKE 'files/%' THEN 'file'
-        WHEN request_params.acl_path_prefix LIKE 'folders/%' THEN 'folder'
-        WHEN request_params.acl_path_prefix LIKE 'genie/%' THEN 'genieSpace'
-        WHEN request_params.acl_path_prefix LIKE 'notebooks/%' THEN 'notebook'
-        WHEN request_params.acl_path_prefix LIKE 'projects/%' THEN 'project'
-        WHEN request_params.acl_path_prefix LIKE 'queries/%' THEN 'query'
-        WHEN request_params.acl_path_prefix LIKE 'repos/%' THEN 'repo'
+        WHEN request_params.aclChangeResourceName LIKE 'alerts/%' THEN 'alert'
+        WHEN request_params.aclChangeResourceName LIKE 'alertsv2/%' THEN 'alert'
+        WHEN request_params.aclChangeResourceName LIKE 'dashboards/%' THEN 'dashboard'
+        WHEN request_params.aclChangeResourceName LIKE 'dashboardsv3/%' THEN 'lakeview_dashboard'
+        WHEN request_params.aclChangeResourceName LIKE 'datarooms/%' THEN 'dataroom'
+        WHEN request_params.aclChangeResourceName LIKE 'directories/%' THEN 'directory'
+        WHEN request_params.aclChangeResourceName LIKE 'experiments/%' THEN 'mlflowExperiments'
+        WHEN request_params.aclChangeResourceName LIKE 'files/%' THEN 'file'
+        WHEN request_params.aclChangeResourceName LIKE 'folders/%' THEN 'folder'
+        WHEN request_params.aclChangeResourceName LIKE 'genie/%' THEN 'genieSpace'
+        WHEN request_params.aclChangeResourceName LIKE 'notebooks/%' THEN 'notebook'
+        WHEN request_params.aclChangeResourceName LIKE 'projects/%' THEN 'project'
+        WHEN request_params.aclChangeResourceName LIKE 'queries/%' THEN 'query'
+        WHEN request_params.aclChangeResourceName LIKE 'repos/%' THEN 'repo'
         ELSE 'directory'
      END""", 
      "request_params.resourceId", "request_params.aclChangeResourceName", "REVERT_PERMISSION", 
