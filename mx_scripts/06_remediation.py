@@ -77,6 +77,7 @@ from databricks.sdk.errors import InvalidParameterValue
 from datetime import datetime
 import json
 import pytz
+from delta.tables import DeltaTable
 
 workspaceId = get_context().workspaceId
 tz = pytz.timezone("America/Mexico_City")
@@ -242,7 +243,8 @@ new_violations_df = spark.sql(f"""
         violation_type,
         violation_reason,
         remediation_action,
-        0 as retry_count
+        0 as retry_count,
+        current_timestamp() as created_at
     FROM {staging_table}
     WHERE processing_status IN ('PENDING', 'PENDING_REPORT')
     ORDER BY event_time ASC
@@ -263,7 +265,8 @@ retryable_violations_df = spark.sql(f"""
         v.violation_type,
         v.violation_reason,
         v.remediation_action,
-        ca.retry_count + 1 as retry_count
+        ca.retry_count + 1 as retry_count,
+        ca.created_at as created_at
     FROM {staging_table} v
     INNER JOIN {control_actions_table} ca ON v.violation_id = ca.violation_id
     WHERE ca.remediation_status <> 'SUCCESS' AND ca.retry_count <= ca.max_retries
@@ -1589,6 +1592,7 @@ for violation_row in violations_list:
     violation = violation_row.asDict()
     workspace_id = violation['workspace_id']
     retry_count = violation['retry_count']
+    created_at = violation['created_at']
     
     # Get the pre-created client for this workspace
     client = workspace_clients.get(workspace_id, WorkspaceClient())
@@ -1617,10 +1621,10 @@ for violation_row in violations_list:
         'error_message': error,
         'retry_count': retry_count,
         'max_retries': max_retries,
-        'last_retry_at': None,
+        'last_retry_at': datetime.now(tz) if status == 'FAILED' else None,
         'completed_at': datetime.now(tz) if status == 'SUCCESS' else None,
         'notification_sent': False,
-        'created_at': datetime.now(tz),
+        'created_at': created_at,
         'updated_at': datetime.now(tz)
     }
     
@@ -1665,7 +1669,10 @@ if not dry_run:
         
         # Create DataFrame with explicit schema
         control_actions_df = spark.createDataFrame(control_actions, schema=control_actions_schema)
-        control_actions_df.write.mode("append").saveAsTable(control_actions_table)
+        DeltaTable.forName(spark, control_actions_table).alias("target").merge(
+            control_actions_df.alias("source"),
+            "target.violation_id = source.violation_id"
+        ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
         print(f"✓ Written {len(control_actions)} control actions to {control_actions_table}")
     
     # Update staging table
