@@ -224,8 +224,9 @@ def create_workspace_client(workspace_url: str) -> WorkspaceClient:
 # Load pending violations from staging table
 # Include both PENDING (for active remediation) and PENDING_REPORT (for deletion reporting)
 staging_table = f"{catalog}.{schema}.governance_violations_staging"
+control_actions_table = f"{catalog}.{schema}.governance_control_actions"
 
-pending_violations_df = spark.sql(f"""
+new_violations_df = spark.sql(f"""
     SELECT 
         violation_id,
         workspace_id,
@@ -240,11 +241,35 @@ pending_violations_df = spark.sql(f"""
         COALESCE(is_delete_event, false) as is_delete_event,
         violation_type,
         violation_reason,
-        remediation_action
+        remediation_action,
+        0 as retry_count
     FROM {staging_table}
     WHERE processing_status IN ('PENDING', 'PENDING_REPORT')
     ORDER BY event_time ASC
 """)
+retryable_violations_df = spark.sql(f"""
+    SELECT 
+        v.violation_id,
+        v.workspace_id,
+        v.event_id,
+        v.event_time,
+        v.action_name,
+        v.user_email,
+        v.object_id,
+        v.object_type,
+        v.object_name,
+        v.is_permission_change,
+        COALESCE(v.is_delete_event, false) as is_delete_event,
+        v.violation_type,
+        v.violation_reason,
+        v.remediation_action,
+        ca.retry_count + 1 as retry_count
+    FROM {staging_table} v
+    INNER JOIN {control_actions_table} ca ON v.violation_id = ca.violation_id
+    WHERE ca.remediation_status <> 'SUCCESS' AND ca.retry_count <= ca.max_retries
+""")
+
+pending_violations_df = retryable_violations_df.union(new_violations_df)
 
 display(pending_violations_df)
 pending_count = pending_violations_df.count()
@@ -1563,6 +1588,7 @@ print("="*80)
 for violation_row in violations_list:
     violation = violation_row.asDict()
     workspace_id = violation['workspace_id']
+    retry_count = violation['retry_count']
     
     # Get the pre-created client for this workspace
     client = workspace_clients.get(workspace_id, WorkspaceClient())
@@ -1589,7 +1615,7 @@ for violation_row in violations_list:
         'remediation_details': details,
         'backup_definition': backup_definition,
         'error_message': error,
-        'retry_count': 0,
+        'retry_count': retry_count,
         'max_retries': max_retries,
         'last_retry_at': None,
         'completed_at': datetime.now(tz) if status == 'SUCCESS' else None,
@@ -1639,7 +1665,6 @@ if not dry_run:
         
         # Create DataFrame with explicit schema
         control_actions_df = spark.createDataFrame(control_actions, schema=control_actions_schema)
-        control_actions_table = f"{catalog}.{schema}.governance_control_actions"
         control_actions_df.write.mode("append").saveAsTable(control_actions_table)
         print(f"✓ Written {len(control_actions)} control actions to {control_actions_table}")
     
