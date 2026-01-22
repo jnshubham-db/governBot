@@ -117,7 +117,7 @@ if load_filters or enable_discover or load_approved_id:
     'load filters': load_filters,
     'Enable discover': enable_discover,
     'load approved identities': load_approved_id,
-    'timestamp': datetime.utcnow().isoformat()
+    'timestamp': datetime.now(tz).isoformat()
 }, indent=3))
 
 # COMMAND ----------
@@ -1592,10 +1592,10 @@ for violation_row in violations_list:
         'retry_count': 0,
         'max_retries': max_retries,
         'last_retry_at': None,
-        'completed_at': datetime.utcnow() if status == 'SUCCESS' else None,
+        'completed_at': datetime.now(tz) if status == 'SUCCESS' else None,
         'notification_sent': False,
-        'created_at': datetime.utcnow(),
-        'updated_at': datetime.utcnow()
+        'created_at': datetime.now(tz),
+        'updated_at': datetime.now(tz)
     }
     
     control_actions.append(control_action)
@@ -1700,5 +1700,5 @@ dbutils.notebook.exit(json.dumps({
     'remediated_count': len(control_actions),
     'success_count': success_count,
     'failed_count': failed_count,
-    'timestamp': datetime.utcnow().isoformat()
+    'timestamp': datetime.now(tz).isoformat()
 }, indent=3))
