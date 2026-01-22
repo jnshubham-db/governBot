@@ -73,10 +73,13 @@ print(f"Load Approved identities: {load_approved_id}")
 # COMMAND ----------
 
 from dbruntime.databricks_repl_context import get_context
+from databricks.sdk.errors import InvalidParameterValue
 from datetime import datetime
 import json
+import pytz
 
 workspaceId = get_context().workspaceId
+tz = pytz.timezone("America/Mexico_City")
 
 if workspaceId == "4126527463676543":
     catalog = "qadl"
@@ -327,8 +330,12 @@ def delete_monitor(client, table_name: str) -> Tuple[bool, Optional[str]]:
 def delete_alert(client, alert_id: str) -> Tuple[bool, Optional[str]]:
     """Delete/trash an alert."""
     try:
-        client.alerts.delete(alert_id)
-        return (True, None)
+        try:
+            client.alerts.delete(alert_id)
+            return (True, None)
+        except InvalidParameterValue as e:
+            client.alerts_v2.trash_alert(alert_id)
+            return (True, None)
     except Exception as e:
         return (False, str(e))
 
@@ -839,7 +846,10 @@ def get_resource_definition(client, object_type: str, object_id: str) -> Optiona
             definition = cluster.as_dict()
             
         elif object_type == 'alert':
-            alert = client.alerts.get(alert_id=object_id)
+            try:
+                alert = client.alerts.get(alert_id=object_id)
+            except InvalidParameterValue as e:
+                alert = client.alerts_v2.get_alert(alert_id=object_id)
             definition = alert.as_dict()
             
         elif object_type == 'warehouse':
