@@ -109,7 +109,7 @@ except:
     elif workspace_id == "2535844015940567":
         workspace_url = "https://adb-2535844015940567.7.azuredatabricks.net/"
 
-all_objects = "workspace_objects,query,dashboard,jobs,cluster,pipelines,apps,mlflowExperiments,monitors,alerts,warehouses,clusterPolicies,instancePools,servingEndpoints,registeredModels,secretScopes,vectorSearchEndpoints,vectorIndexes,catalogs,schemas,tables,volumes,functions,connections,externalLocations,storageCredentials,shares,recipients,providers,cleanRooms,metastores,genieSpaces,ucRegisteredModels,featureTables"
+all_objects = "workspace_objects,query,dashboard,jobs,cluster,pipelines,apps,mlflowExperiments,monitors,alerts,alertsv2,warehouses,clusterPolicies,instancePools,servingEndpoints,registeredModels,secretScopes,vectorSearchEndpoints,vectorIndexes,catalogs,schemas,tables,volumes,functions,connections,externalLocations,storageCredentials,shares,recipients,providers,cleanRooms,metastores,genieSpaces,ucRegisteredModels,featureTables"
 
 try:
     object_types_str = dbutils.widgets.get("object_types")
@@ -162,7 +162,7 @@ if enable_discover == False:
     'status': 'SKIPPED',
     'reason': "Proceso no abanderado para realizar el discovery de objetos o actualizar los filtros",
     'Enable discover': enable_discover,
-    'timestamp': datetime.utcnow().isoformat()
+    'timestamp': datetime.now(tz).isoformat()
 }, indent=3))
 
 # COMMAND ----------
@@ -695,8 +695,8 @@ def discover_workspace_objects(client, workspace_id: str, use_selective_filter: 
                 'permissions': permissions,
                 'metadata': metadata,
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             }
             
             with discovered_lock:
@@ -842,8 +842,8 @@ def discover_queries(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'created_at': str(getattr(query, 'create_time', '')) or ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} queries")
@@ -912,8 +912,8 @@ def discover_dashboards(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'create_time': str(dashboard.create_time) if hasattr(dashboard, 'create_time') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
             lakeview_count += 1
         
@@ -947,8 +947,8 @@ def discover_dashboards(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'permissions': permissions,
                 'metadata': {'created_at': str(dashboard.created_at) if hasattr(dashboard, 'created_at') else ''},
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
             legacy_count += 1
         
@@ -986,8 +986,8 @@ def discover_jobs(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'permissions': permissions,
                 'metadata': {'created_time': str(job.created_time)},
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} jobs")
@@ -1029,8 +1029,8 @@ def discover_clusters(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'permissions': permissions,
                 'metadata': {'state': cluster.state.value if cluster.state else 'UNKNOWN'},
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} clusters")
@@ -1159,8 +1159,8 @@ def discover_pipelines(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'permissions': permissions,
                 'metadata': metadata,
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} pipelines (API: {api_count}, System Tables: {new_from_system} new)")
@@ -1259,8 +1259,8 @@ def discover_apps(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'url': app.url if hasattr(app, 'url') and app.url else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} apps")
@@ -1302,8 +1302,8 @@ def discover_mlflow_experiments(client, workspace_id: str) -> List[Dict[str, Any
                 'permissions': permissions,
                 'metadata': {'artifact_location': experiment.artifact_location or ''},
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} MLflow experiments")
@@ -1399,8 +1399,8 @@ def discover_monitors(client, workspace_id: str) -> List[Dict[str, Any]]:
                                             'assets_dir': getattr(monitor, 'assets_dir', '')
                                         },
                                         'is_active': True,
-                                        'created_at': datetime.utcnow(),
-                                        'updated_at': datetime.utcnow()
+                                        'created_at': datetime.now(tz),
+                                        'updated_at': datetime.now(tz)
                                     })
                                     monitor_count += 1
                                     print(f"    {datetime.now(tz)} Found monitor on table: {full_name}")
@@ -1468,13 +1468,71 @@ def discover_alerts(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'created_at': str(alert.created_at) if hasattr(alert, 'created_at') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} alerts")
     except Exception as e:
         print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering alerts: {str(e)}")
+    
+    return discovered
+
+# COMMAND ----------
+
+def discover_alertsv2(client, workspace_id: str) -> List[Dict[str, Any]]:
+    """Discover all SQL alertsv2 with permissions."""
+    print("Discovering alertsv2...")
+    discovered = []
+    
+    try:        
+        for alert in client.alerts_v2.list_alerts():
+            owner_email = 'unknown'
+            # Try different owner attributes based on SDK version
+            if hasattr(alert, 'user') and alert.user and hasattr(alert.user, 'email'):
+                owner_email = alert.user.email
+            elif hasattr(alert, 'owner_user_name') and alert.owner_user_name:
+                owner_email = alert.owner_user_name
+            
+            # Get alert ID - could be 'id' or 'alert_id' depending on SDK version
+            alert_id = getattr(alert, 'id', None) or getattr(alert, 'alert_id', None)
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] alertsv2/{alert_id}")
+
+            if not alert_id:
+                continue
+            
+            # Fetch permissions for the alert
+            owner_from_perms, permissions = get_permissions_safe(client, "alertsv2", str(alert_id))
+            if owner_email == 'unknown' and owner_from_perms != 'unknown':
+                owner_email = owner_from_perms
+            
+            # Get alert name - try different attributes
+            alert_name = (getattr(alert, 'name', None) or 
+                         getattr(alert, 'display_name', None) or 
+                         'Unnamed Alert')
+            
+            discovered.append({
+                'object_id': str(alert_id),
+                'workspace_id': workspace_id,
+                'object_type': 'alertsv2',
+                'object_name': alert_name,
+                'object_path': None,
+                'owner_email': owner_email,
+                'permissions': permissions,
+                'metadata': {
+                    'state': alert.state.value if hasattr(alert, 'state') and alert.state else 'UNKNOWN',
+                    'created_at': str(alert.created_at) if hasattr(alert, 'created_at') else ''
+                },
+                'is_active': True,
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
+            })
+        
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} alertsv2")
+    except Exception as e:
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering alertsv2: {str(e)}")
     
     return discovered
 
@@ -1507,8 +1565,8 @@ def discover_warehouses(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'cluster_size': warehouse.cluster_size if hasattr(warehouse, 'cluster_size') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} SQL warehouses")
@@ -1546,8 +1604,8 @@ def discover_cluster_policies(client, workspace_id: str) -> List[Dict[str, Any]]
                     'is_default': str(policy.is_default) if hasattr(policy, 'is_default') else 'false'
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} cluster policies")
@@ -1583,8 +1641,8 @@ def discover_instance_pools(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'node_type_id': pool.node_type_id if hasattr(pool, 'node_type_id') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} instance pools")
@@ -1673,8 +1731,8 @@ def discover_serving_endpoints(client, workspace_id: str) -> List[Dict[str, Any]
                     'creation_timestamp': str(endpoint.creation_timestamp) if hasattr(endpoint, 'creation_timestamp') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} serving endpoints")
@@ -1748,8 +1806,8 @@ def discover_registered_models(client, workspace_id: str) -> List[Dict[str, Any]
                     'created_at': str(model.created_at) if hasattr(model, 'created_at') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} registered models")
@@ -1784,8 +1842,8 @@ def discover_secret_scopes(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'backend_type': scope.backend_type.value if hasattr(scope, 'backend_type') and scope.backend_type else 'UNKNOWN'
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} secret scopes")
@@ -1855,8 +1913,8 @@ def discover_vector_search_endpoints(client, workspace_id: str) -> List[Dict[str
                     'endpoint_status': endpoint.endpoint_status.state.value if hasattr(endpoint, 'endpoint_status') and endpoint.endpoint_status else 'UNKNOWN'
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} vector search endpoints")
@@ -1911,8 +1969,8 @@ def discover_catalogs(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'created_at': str(catalog_info.created_at) if hasattr(catalog_info, 'created_at') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} catalogs")
@@ -1968,8 +2026,8 @@ def discover_schemas(client, workspace_id: str) -> List[Dict[str, Any]]:
                             'created_at': str(schema_info.created_at) if hasattr(schema_info, 'created_at') else ''
                         },
                         'is_active': True,
-                        'created_at': datetime.utcnow(),
-                        'updated_at': datetime.utcnow()
+                        'created_at': datetime.now(tz),
+                        'updated_at': datetime.now(tz)
                     })
             except Exception as schema_error:
                 pass  # Skip catalogs without access
@@ -2034,8 +2092,8 @@ def discover_volumes(client, workspace_id: str) -> List[Dict[str, Any]]:
                                     'created_at': str(volume.created_at) if hasattr(volume, 'created_at') else ''
                                 },
                                 'is_active': True,
-                                'created_at': datetime.utcnow(),
-                                'updated_at': datetime.utcnow()
+                                'created_at': datetime.now(tz),
+                                'updated_at': datetime.now(tz)
                             })
                     except Exception as vol_error:
                         pass  # Skip schemas without volume access
@@ -2080,8 +2138,8 @@ def discover_connections(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'created_at': str(connection.created_at) if hasattr(connection, 'created_at') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} connections")
@@ -2138,8 +2196,8 @@ def discover_tables(client, workspace_id: str, max_workers: int = 10) -> List[Di
                 'created_at': str(table.created_at) if hasattr(table, 'created_at') else ''
             },
             'is_active': True,
-            'created_at': datetime.utcnow(),
-            'updated_at': datetime.utcnow()
+            'created_at': datetime.now(tz),
+            'updated_at': datetime.now(tz)
         }
     
     try:
@@ -2250,8 +2308,8 @@ def discover_functions(client, workspace_id: str) -> List[Dict[str, Any]]:
                                     'created_at': str(func.created_at) if hasattr(func, 'created_at') else ''
                                 },
                                 'is_active': True,
-                                'created_at': datetime.utcnow(),
-                                'updated_at': datetime.utcnow()
+                                'created_at': datetime.now(tz),
+                                'updated_at': datetime.now(tz)
                             })
                     except Exception as func_error:
                         pass  # Skip schemas without function access
@@ -2298,8 +2356,8 @@ def discover_external_locations(client, workspace_id: str) -> List[Dict[str, Any
                     'created_at': str(ext_loc.created_at) if hasattr(ext_loc, 'created_at') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} external locations")
@@ -2340,8 +2398,8 @@ def discover_storage_credentials(client, workspace_id: str) -> List[Dict[str, An
                     'created_at': str(cred.created_at) if hasattr(cred, 'created_at') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} storage credentials")
@@ -2382,8 +2440,8 @@ def discover_shares(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'created_at': str(share.created_at) if hasattr(share, 'created_at') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} shares")
@@ -2425,8 +2483,8 @@ def discover_recipients(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'created_at': str(recipient.created_at) if hasattr(recipient, 'created_at') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} recipients")
@@ -2468,8 +2526,8 @@ def discover_providers(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'created_at': str(provider.created_at) if hasattr(provider, 'created_at') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} providers")
@@ -2520,8 +2578,8 @@ def discover_clean_rooms(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'comment': clean_room.comment if hasattr(clean_room, 'comment') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} clean rooms")
@@ -2573,8 +2631,8 @@ def discover_metastores(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'created_at': str(metastore.created_at) if hasattr(metastore, 'created_at') else ''
                 },
                 'is_active': True,
-                'created_at': datetime.utcnow(),
-                'updated_at': datetime.utcnow()
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)
             })
         
         print(f"✓ Discovered {len(discovered)} metastores")
@@ -2687,8 +2745,8 @@ def discover_genie_spaces(client, workspace_id: str) -> List[Dict[str, Any]]:
                     'permissions': permissions,
                     'metadata': {},
                     'is_active': True,
-                    'created_at': datetime.utcnow(),
-                    'updated_at': datetime.utcnow()
+                    'created_at': datetime.now(tz),
+                    'updated_at': datetime.now(tz)
                 })
             except Exception as e:
                 print(f"    Warning: Error processing Genie space: {str(e)}")
@@ -2738,8 +2796,8 @@ def discover_vector_indexes(client, workspace_id: str) -> List[Dict[str, Any]]:
                         'permissions': permissions,
                         'metadata': {'endpoint_name': endpoint_name},
                         'is_active': True,
-                        'created_at': datetime.utcnow(),
-                        'updated_at': datetime.utcnow()
+                        'created_at': datetime.now(tz),
+                        'updated_at': datetime.now(tz)
                     })
             except Exception as e:
                 print(f"    Warning: Error listing indexes for endpoint {endpoint.name}: {str(e)}")
@@ -2790,8 +2848,8 @@ def discover_uc_registered_models(client, workspace_id: str) -> List[Dict[str, A
                             'schema_name': getattr(model, 'schema_name', 'unknown')
                         },
                         'is_active': True,
-                        'created_at': datetime.utcnow(),
-                        'updated_at': datetime.utcnow()
+                        'created_at': datetime.now(tz),
+                        'updated_at': datetime.now(tz)
                     })
             except Exception as e:
                 # Skip catalogs we can't access
@@ -2852,6 +2910,7 @@ discovery_functions = {
     'monitors': discover_monitors,
     # Compute & SQL
     'alerts': discover_alerts,
+    'alertsv2': discover_alertsv2,
     'warehouses': discover_warehouses,
     'clusterPolicies': discover_cluster_policies,
     'instancePools': discover_instance_pools,
@@ -3020,5 +3079,5 @@ dbutils.notebook.exit(json.dumps({
     'workspace_id': workspace_id,
     'counts': counts,
     'total': sum(counts.values()),
-    'timestamp': datetime.utcnow().isoformat()
+    'timestamp': datetime.now(tz).isoformat()
 }, indent=3))
