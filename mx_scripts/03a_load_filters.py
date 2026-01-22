@@ -19,7 +19,7 @@
 
 #dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 #dbutils.widgets.text("schema", "sch_mng_admon", "Schema Name")
-dbutils.widgets.dropdown("replace_existing", "true", ["true", "false"], "Replace Existing Filters")
+#dbutils.widgets.dropdown("replace_existing", "true", ["true", "false"], "Replace Existing Filters")
 
 # COMMAND ----------
 
@@ -38,6 +38,9 @@ print(f"Serverless: {flagSERVERLESS}")
 # COMMAND ----------
 
 from dbruntime.databricks_repl_context import get_context
+from datetime import datetime
+import json
+
 workspaceId = get_context().workspaceId
 
 if workspaceId == "4126527463676543":
@@ -52,11 +55,33 @@ print(f"Catalog: {catalog}")
 
 #catalog = dbutils.widgets.get("catalog")
 #schema = dbutils.widgets.get("schema")
-replace_existing = dbutils.widgets.get("replace_existing").lower() == "true"
+
+try:
+    replace_existing = dbutils.widgets.get("replace_existing").lower() == "true"
+except Exception as e:
+    replace_existing = False
+
+try:
+    load_filters = True if dbutils.widgets.get("load_filters") == "Y" or dbutils.widgets.get("load_filters") == "S" else False
+except Exception as e:
+    load_filters = False
+
+if load_filters:
+    replace_existing = True
 
 print(f"Catalog: {catalog}")
 print(f"Schema: {schema}")
 print(f"Replace Existing: {replace_existing}")
+
+# COMMAND ----------
+
+if load_filters == False:
+    dbutils.notebook.exit(json.dumps({
+    'status': 'SKIPPED',
+    'reason': "Proceso no abanderado para realizar el discovery de objetos o actualizar los filtros",
+    'load filters': load_filters,
+    'timestamp': datetime.utcnow().isoformat()
+}, indent=3))
 
 # COMMAND ----------
 
@@ -172,8 +197,8 @@ create_filters_raw = [
     ["uc_function_create", "unityCatalog", "createFunction", "function", "request_params.function_info", "request_params.function_info", "DELETE_RESOURCE", {}, True, "Unity Catalog Function creation"],
     ["uc_policy_create", "unityCatalog", "createPolicy", "abacPolicy", "request_params.policy_info", "request_params.policy_info", "DELETE_RESOURCE", {}, True, "Unity Catalog ABAC Policy creation"],
     #Workspace / Notebook
-    ["notebook_create", "notebook", "createNotebook", "notebook", "request_params.notebookId", "request_params.path", "DELETE_RESOURCE", {}, True, "Notebook creation in Workspace"],
-    ["file_create", "workspace", "createFile", "file", "request_params.path", "request_params.path", "DELETE_RESOURCE", {}, True, "File creation in Workspace"],
+    ["notebook_create", "notebook", "createNotebook", "notebook", "request_params.notebookId", "concat('/Workspace', request_params.path)", "DELETE_RESOURCE", {}, True, "Notebook creation in Workspace"],
+    ["file_create", "workspace", "createFile", "file", "request_params.path", "concat('/Workspace', request_params.path)", "DELETE_RESOURCE", {}, True, "File creation in Workspace"],
 ]
 
 print(f"Defined {len(create_filters_raw)} create event filters")
@@ -236,8 +261,8 @@ acl_filters_raw = [
     # /directories/, /experiments/, /files/, /folders/, /genie/, /notebooks/, /projects/, /queries/, /repos/
     ["workspace_acl_change", "workspace", "changeWorkspaceAcl", 
      """CASE 
-        WHEN request_params.aclChangeResourceName LIKE 'alerts/%' THEN 'alert'
-        WHEN request_params.aclChangeResourceName LIKE 'alertsv2/%' THEN 'alert'
+        WHEN request_params.aclChangeResourceName LIKE 'alerts/%' THEN 'alerts'
+        WHEN request_params.aclChangeResourceName LIKE 'alertsv2/%' THEN 'alertsv2'
         WHEN request_params.aclChangeResourceName LIKE 'dashboards/%' THEN 'dashboard'
         WHEN request_params.aclChangeResourceName LIKE 'dashboardsv3/%' THEN 'lakeview_dashboard'
         WHEN request_params.aclChangeResourceName LIKE 'datarooms/%' THEN 'dataroom'
@@ -330,9 +355,9 @@ delete_filters_raw = [
     ["serving_endpoint_delete", "serverlessRealTimeInference", "deleteServingEndpoint", "servingEndpoint", "request_params.name", "request_params.name", "REPORT_DELETION", {}, True, "Serving Endpoint deletion"],
     
     # Notebooks/Folders/Repos
-    ["folder_delete", "notebook", "deleteFolder", "folder", "request_params.path", "request_params.path", "REPORT_DELETION", {}, True, "Folder deletion"],
-    ["notebook_delete", "notebook", "deleteNotebook", "notebook", "request_params.path", "request_params.path", "REPORT_DELETION", {}, True, "Notebook deletion"],
-    ["repo_delete", "notebook", "deleteRepo", "repo", "request_params.path", "request_params.path", "REPORT_DELETION", {}, True, "Repo deletion"],
+    ["folder_delete", "notebook", "deleteFolder", "folder", "request_params.path", "concat('/Workspace', request_params.path)", "REPORT_DELETION", {}, True, "Folder deletion"],
+    ["notebook_delete", "notebook", "deleteNotebook", "notebook", "request_params.path", "concat('/Workspace', request_params.path)", "REPORT_DELETION", {}, True, "Notebook deletion"],
+    ["repo_delete", "notebook", "deleteRepo", "repo", "request_params.path", "concat('/Workspace', request_params.path)", "REPORT_DELETION", {}, True, "Repo deletion"],
     
     # Secrets    
 																																								   
@@ -361,7 +386,7 @@ delete_filters_raw = [
     ["uc_metastore_assignment_delete", "unityCatalog", "deleteMetastoreAssignment", "metastoreAssignment", "request_params.input_workspace_id", "request_params.input_workspace_id", "REPORT_DELETION", {}, True, "Metastore Assignment deletion"],
     
     #Workspace
-    ["workspace_fileDelete", "workspace", "fileDelete", "files", "request_params.path", "request_params.path", "REPORT_DELETION", {}, True, "Workspace file deletion"],
+    ["workspace_fileDelete", "workspace", "fileDelete", "files", "request_params.path", "concat('/Workspace', request_params.path)", "REPORT_DELETION", {}, True, "Workspace file deletion"],
 ]
 
 print(f"Defined {len(delete_filters_raw)} delete event filters")
@@ -585,4 +610,4 @@ dbutils.notebook.exit(json.dumps({
     'acl_filters': len(acl_filters),
     'delete_filters': len(delete_filters),
     'timestamp': datetime.utcnow().isoformat()
-}))
+}, indent=3))

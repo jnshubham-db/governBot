@@ -20,67 +20,150 @@
 
 # COMMAND ----------
 
-#dbutils.widgets.text("catalog", "governance", "Catalog Name")
-#dbutils.widgets.text("schema", "sch_mng_admon", "Schema Name")
-dbutils.widgets.text("workspace_id", "4126527463676543", "Workspace ID (required)")
-dbutils.widgets.text("workspace_url", "https://adb-4126527463676543.3.azuredatabricks.net/", "Workspace URL (required)")
-dbutils.widgets.multiselect("object_types", "workspace_objects", 
-                          ["workspace_objects", "query", "dashboard", "jobs", "cluster", "pipelines", "apps", 
-                           "mlflowExperiments", "monitors", "alerts", "warehouses", "clusterPolicies", 
-                           "instancePools", "servingEndpoints", "registeredModels", "secretScopes",
-                           "vectorSearchEndpoints", "vectorIndexes", "catalogs", "schemas", "tables", "volumes", 
-                           "functions", "connections", "externalLocations", "storageCredentials", "shares", 
-                           "recipients", "providers", "cleanRooms", "metastores", "genieSpaces", 
-                           "ucRegisteredModels", "featureTables"],
-                          "Object Types to Discover")
-dbutils.widgets.dropdown("use_selective_filter", "Y", ["Y", "N"], "Use Selective Filtering")
-dbutils.widgets.text("max_threads", "10", "Max Threads for Workspace Discovery")
-dbutils.widgets.dropdown("debug_permissions", "N", ["Y", "N"], "Debug Permission Fetching")
+try:
+    auth_type = dbutils.widgets.get("auth_type")
+except Exception as e:
+    auth_type = "azure-client-secret"
+
+print(f"Auth type: {auth_type}")
 
 # COMMAND ----------
 
 from dbruntime.databricks_repl_context import get_context
+import json
+from datetime import datetime
+import pytz
+
 workspaceId = get_context().workspaceId
+tz = pytz.timezone("America/Mexico_City")
 
 if workspaceId == "4126527463676543":
+    workspace_url = "https://adb-4126527463676543.3.azuredatabricks.net/"
     catalog = "qadl"
-    kv_scope = "azueskvsadl01"
-    kv_client_id_key = "b8a66bbe-9d97-4f64-bd3d-9e4768835700"
-    kv_client_secret_key = 'serviceprincipal-SPDBPROD'
-    kv_tenant_id_key = 'ApiRestTenant'
+    if auth_type == "azure-client-secret":
+        kv_scope = "azueskvsadl01"
+        kv_client_id_key = "b8a66bbe-9d97-4f64-bd3d-9e4768835700"
+        kv_client_secret_key = 'serviceprincipal-SPDBPROD'
+        kv_tenant_id_key = 'ApiRestTenant'
+    elif auth_type == "pat":
+        kv_scope = "azueskvsadl01"
+        kv_client_secret_key = "add-secret-id-token-databricks"
+        kv_client_secret_key2 = "add-secret-id-token-databricks2"
 else:
+    workspace_url = "https://adb-4782182804791024.4.azuredatabricks.net/"
     catalog = "dlprod"
-    kv_scope = "esazukvspdl01"
-    kv_client_id_key = "7cdf5dcf-54d6-4a1c-ba10-7fd308054e87"
-    kv_client_secret_key ='serviceprincipal-SPDBPROD'
-    kv_tenant_id_key = 'ApiRestTenant'
+    if auth_type == "azure-client-secret":
+        kv_scope = "TBD" #"esazukvspdl01"
+        kv_client_id_key = "TBD" #"7cdf5dcf-54d6-4a1c-ba10-7fd308054e87"
+        kv_client_secret_key = "TBD" #"serviceprincipal-SPDBPROD"
+        kv_tenant_id_key = "TBD" #"ApiRestTenant"
+    elif auth_type == "pat":
+        kv_scope = "esazukvspcso01"
+        kv_client_secret_key = "WADatabricks"
+        kv_client_secret_key2 = "WADatabricks2"
 
 schema ="sch_mng_admon"
 
+print(f"workspaceId: {workspaceId}")
+print(f"workspace_url: {workspace_url}")
 print(f"Catalog: {catalog}")
+print(f"Timezone: {tz}")
+
+# COMMAND ----------
+
+#dbutils.widgets.text("catalog", "governance", "Catalog Name")
+#dbutils.widgets.text("schema", "sch_mng_admon", "Schema Name")
+#dbutils.widgets.text("workspace_id", workspaceId, "Workspace ID (required)")
+#dbutils.widgets.text("workspace_url", workspace_url, "Workspace URL (required)")
+#dbutils.widgets.multiselect("object_types", "workspace_objects", 
+#                          ["workspace_objects", "query", "dashboard", "jobs", "cluster", "pipelines", "apps", 
+#                           "mlflowExperiments", "monitors", "alerts", "warehouses", "clusterPolicies", 
+#                           "instancePools", "servingEndpoints", "registeredModels", "secretScopes",
+#                           "vectorSearchEndpoints", "vectorIndexes", "catalogs", "schemas", "tables", "volumes", 
+#                           "functions", "connections", "externalLocations", "storageCredentials", "shares", 
+#                           "recipients", "providers", "cleanRooms", "metastores", "genieSpaces", 
+#                           "ucRegisteredModels", "featureTables"],
+#                          "Object Types to Discover")
+#dbutils.widgets.dropdown("use_selective_filter", "Y", ["Y", "N"], "Use Selective Filtering")
+#dbutils.widgets.text("max_threads", "10", "Max Threads for Workspace Discovery")
+#dbutils.widgets.dropdown("debug_permissions", "N", ["Y", "N"], "Debug Permission Fetching")
+#dbutils.widgets.dropdown("auth_type","azure-client-secret",["pat","azure-client-secret"],"Auth Type")
+#dbutils.widgets.dropdown("enable_discover","Y",["Y","N"],"Enable discover")
 
 # COMMAND ----------
 
 #catalog = dbutils.widgets.get("catalog")
 #schema = dbutils.widgets.get("schema")
-workspace_id = dbutils.widgets.get("workspace_id")
-workspace_url = dbutils.widgets.get("workspace_url")
-object_types_str = dbutils.widgets.get("object_types")
+try:
+    workspace_id = dbutils.widgets.get("workspace_id")
+except:
+    workspace_id = workspaceId
+
+try:
+    workspace_url = dbutils.widgets.get("workspace_url")
+except:
+    if workspaceId == "4126527463676543":
+        workspace_url = "https://adb-4126527463676543.3.azuredatabricks.net/"
+    elif workspace_id == "4782182804791024":
+        workspace_url = "https://adb-4782182804791024.4.azuredatabricks.net/"
+    elif workspace_id == "2535844015940567":
+        workspace_url = "https://adb-2535844015940567.7.azuredatabricks.net/"
+
+all_objects = "workspace_objects,query,dashboard,jobs,cluster,pipelines,apps,mlflowExperiments,monitors,alerts,warehouses,clusterPolicies,instancePools,servingEndpoints,registeredModels,secretScopes,vectorSearchEndpoints,vectorIndexes,catalogs,schemas,tables,volumes,functions,connections,externalLocations,storageCredentials,shares,recipients,providers,cleanRooms,metastores,genieSpaces,ucRegisteredModels,featureTables"
+
+try:
+    object_types_str = dbutils.widgets.get("object_types")
+except:
+    object_types_str = all_objects
+
+if object_types_str == "ALL":
+    object_types_str = all_objects
+
 object_types = [ot.strip() for ot in object_types_str.split(",")]
-use_selective_filter = dbutils.widgets.get("use_selective_filter")
-max_threads = int(dbutils.widgets.get("max_threads"))
-debug_permissions = dbutils.widgets.get("debug_permissions")
+
+try:
+    use_selective_filter = dbutils.widgets.get("use_selective_filter")
+except:
+    use_selective_filter = "Y"
+
+try:
+    max_threads = int(dbutils.widgets.get("max_threads"))
+except:
+    max_threads = 20
+
+try:
+    debug_permissions = dbutils.widgets.get("debug_permissions")
+except:
+    debug_permissions = "N"
 
 if not workspace_id or not workspace_url:
     raise ValueError("workspace_id and workspace_url are required")
 
+try:
+    enable_discover = True if dbutils.widgets.get("enable_discover") == "Y" or dbutils.widgets.get("enable_discover") == "S" else False
+except:
+    enable_discover = False
+
 print(f"Catalog: {catalog}")
 print(f"Schema: {schema}")
 print(f"Workspace ID: {workspace_id}")
+print(f"Workspace URL: {workspace_url}")
 print(f"Object Types: {', '.join(object_types)}")
 print(f"Use Selective Filter: {use_selective_filter}")
 print(f"Max Threads: {max_threads}")
 print(f"Debug Permissions: {debug_permissions}")
+print(f"Auth type: {auth_type}")
+print(f"Enable Discover: {enable_discover}")
+
+# COMMAND ----------
+
+if enable_discover == False:
+    dbutils.notebook.exit(json.dumps({
+    'status': 'SKIPPED',
+    'reason': "Proceso no abanderado para realizar el discovery de objetos o actualizar los filtros",
+    'Enable discover': enable_discover,
+    'timestamp': datetime.utcnow().isoformat()
+}, indent=3))
 
 # COMMAND ----------
 
@@ -103,18 +186,30 @@ current_workspace_id = get_context().workspaceId
 print(f"Current Workspace ID: {current_workspace_id}")
 
 def create_workspace_client(workspace_url: str) -> WorkspaceClient:
-    """Create a WorkspaceClient with Azure authentication using Key Vault secrets."""
-    # Get credentials from Key Vault
-    azure_client_id = kv_client_id_key
-    client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
-    tenant_id = dbutils.secrets.get(scope=kv_scope, key=kv_tenant_id_key)
-    if kv_scope:
+    """Create a WorkspaceClient with Azure authentication using Key Vault secrets."""    
+    if kv_scope and auth_type == "azure-client-secret":
+        # Get credentials from Key Vault
+        azure_client_id = kv_client_id_key #dbutils.secrets.get(scope=kv_scope, key=kv_client_id_key)
+        client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
+        tenant_id = dbutils.secrets.get(scope=kv_scope, key=kv_tenant_id_key)
+
         return WorkspaceClient(
             host=workspace_url,
             azure_client_id=azure_client_id,
             azure_client_secret=client_secret,
             azure_tenant_id=tenant_id,
             auth_type="azure-client-secret"
+        )
+    elif kv_scope and auth_type == "pat":
+        if "4126527463676543" in workspace_url or "4782182804791024" in workspace_url:
+            client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
+        else:
+            client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key2)
+
+        return WorkspaceClient(
+            host=workspace_url,
+            token = client_secret,
+            auth_type="pat"
         )
     else:
         return WorkspaceClient()
@@ -186,12 +281,20 @@ def get_permissions_safe(client, object_type: str, object_id: str, debug_sample:
         return any(pattern.lower() in error_lower for pattern in TRANSIENT_ERRORS)
     
     def parse_permissions(permissions) -> tuple:
-        """Parse permissions response into (owner_email, acl_list)."""
+        """
+        Parse permissions response into (owner_email, acl_list).
+        
+        IMPORTANT: Only captures DIRECT (non-inherited) permissions.
+        Inherited permissions are excluded because:
+        1. They don't need to be reapplied during remediation - they're inherited from parent
+        2. Reapplying inherited permissions would create duplicates (one inherited, one explicit)
+        """
         acl_list = []
         owner_email = 'unknown'
+        inherited_count = 0
         
         if debug_sample:
-            print(f"    DEBUG: Fetching permissions for {object_type}/{object_id}")
+            print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Fetching permissions for {object_type}/{object_id}")
             print(f"    DEBUG: Response has ACL: {permissions.access_control_list is not None}")
             if permissions.access_control_list:
                 print(f"    DEBUG: ACL length: {len(permissions.access_control_list)}")
@@ -221,6 +324,12 @@ def get_permissions_safe(client, object_type: str, object_id: str, debug_sample:
                             elif owner_email == 'unknown':
                                 owner_email = principal_email
                         
+                        # Skip inherited permissions - they don't need to be stored
+                        # and reapplying them would create duplicates
+                        if perm.inherited:
+                            inherited_count += 1
+                            continue
+                        
                         acl_list.append(Row(
                             principal_email=principal_email,
                             principal_type=principal_type,
@@ -228,7 +337,7 @@ def get_permissions_safe(client, object_type: str, object_id: str, debug_sample:
                         ))
         
         if debug_sample:
-            print(f"    DEBUG: Extracted {len(acl_list)} permissions, owner: {owner_email}")
+            print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Extracted {len(acl_list)} direct permissions (skipped {inherited_count} inherited), owner: {owner_email}")
         
         return (owner_email, acl_list)
     
@@ -253,7 +362,7 @@ def get_permissions_safe(client, object_type: str, object_id: str, debug_sample:
                 break
     
     # All retries exhausted or non-transient error
-    print(f"  ⚠️  Permission fetch failed for {object_type}/{object_id}: {str(last_error)}")
+    print(f"  ⚠️  [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Permission fetch failed for {object_type}/{object_id}: {str(last_error)}")
     return ('unknown', [])
 
 # COMMAND ----------
@@ -343,7 +452,7 @@ def get_uc_grants_safe(client, securable_type: str, full_name: str, max_retries:
             
             if is_transient_error(error_msg) and attempt < max_retries - 1:
                 wait_time = retry_delay * (attempt + 1)
-                print(f"  ⚠️  Transient error for {securable_type}/{full_name}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                print(f"  ⚠️  [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Transient error for {securable_type}/{full_name}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
                 time.sleep(wait_time)
                 continue
             else:
@@ -594,7 +703,7 @@ def discover_workspace_objects(client, workspace_id: str, use_selective_filter: 
                 discovered.append(discovered_obj)
         
         except Exception as e:
-            print(f"  Warning: Error processing object {obj.path if hasattr(obj, 'path') else 'unknown'}: {str(e)}")
+            print(f" [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Warning: Error processing object {obj.path if hasattr(obj, 'path') else 'unknown'}: {str(e)}")
     
     # Use a queue-based approach to avoid thread pool recursion
     from queue import Queue
@@ -634,7 +743,7 @@ def discover_workspace_objects(client, workspace_id: str, use_selective_filter: 
                         path_queue.put(dir_obj.path)
                 
             except Exception as e:
-                print(f"  Warning: Error listing path {path}: {str(e)}")
+                print(f" [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Warning: Error listing path {path}: {str(e)}")
             finally:
                 with queue_lock:
                     active_workers[0] -= 1
@@ -705,6 +814,9 @@ def discover_queries(client, workspace_id: str) -> List[Dict[str, Any]]:
         for query in client.queries.list():
             # Get query ID - the attribute is 'id' in the SDK
             query_id = query.id
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] queries/{query_id}")
             
             # Get permissions using the query ID
             owner_email, permissions = get_permissions_safe(client, "queries", query_id)
@@ -734,9 +846,9 @@ def discover_queries(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} queries")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} queries")
     except Exception as e:
-        print(f"✗ Error discovering queries: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering queries: {str(e)}")
     
     return discovered
 
@@ -760,11 +872,16 @@ def discover_dashboards(client, workspace_id: str) -> List[Dict[str, Any]]:
             # Try to get permissions using the dashboard_id
             permissions = []
             dashboard_id = dashboard.dashboard_id
+
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] dashboards/{dashboard_id}")
+
             dashboard_path = dashboard.path if hasattr(dashboard, 'path') else None
             
             # Try getting permissions using the dashboards permission type
             try:
                 owner_from_perms, permissions = get_permissions_safe(client, "dashboards", dashboard_id)
+
                 if owner_email == 'unknown' and owner_from_perms != 'unknown':
                     owner_email = owner_from_perms
             except Exception:
@@ -800,17 +917,20 @@ def discover_dashboards(client, workspace_id: str) -> List[Dict[str, Any]]:
             })
             lakeview_count += 1
         
-        print(f"  ✓ Discovered {lakeview_count} Lakeview (AI/BI) dashboards")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {lakeview_count} Lakeview (AI/BI) dashboards")
     except AttributeError:
-        print(f"  ⚠ Lakeview API not available in SDK - skipping Lakeview dashboards")
+        print(f"  ⚠ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Lakeview API not available in SDK - skipping Lakeview dashboards")
     except Exception as e:
-        print(f"  ⚠ Error discovering Lakeview dashboards: {str(e)}")
+        print(f"  ⚠ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering Lakeview dashboards: {str(e)}")
     
     # Discover legacy SQL dashboards using the legacy API
     try:
         legacy_count = 0
         # Legacy SQL dashboards use "dbsql-dashboards" for permissions API
         for dashboard in client.dashboards.list():
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] dashboards/{dashboard.id}")
+
             # Use dbsql-dashboards for permission type (legacy SQL dashboards)
             owner_email, permissions = get_permissions_safe(client, "dbsql-dashboards", dashboard.id)
             # Prefer the owner from dashboard.user if available
@@ -832,11 +952,11 @@ def discover_dashboards(client, workspace_id: str) -> List[Dict[str, Any]]:
             })
             legacy_count += 1
         
-        print(f"  ✓ Discovered {legacy_count} legacy SQL dashboards")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {legacy_count} legacy SQL dashboards")
     except Exception as e:
-        print(f"  ⚠ Error discovering legacy SQL dashboards: {str(e)}")
+        print(f"  ⚠ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering legacy SQL dashboards: {str(e)}")
     
-    print(f"✓ Discovered {len(discovered)} total dashboards")
+    print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} total dashboards")
     return discovered
 
 # COMMAND ----------
@@ -848,6 +968,9 @@ def discover_jobs(client, workspace_id: str) -> List[Dict[str, Any]]:
     
     try:
         for job in client.jobs.list():
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] jobs/{str(job.job_id)}")
+
             owner_email, permissions = get_permissions_safe(client, "jobs", str(job.job_id))
             # Prefer the owner from job.creator_user_name if available
             if job.creator_user_name:
@@ -867,21 +990,30 @@ def discover_jobs(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} jobs")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} jobs")
     except Exception as e:
-        print(f"✗ Error discovering jobs: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering jobs: {str(e)}")
     
     return discovered
 
 # COMMAND ----------
 
+from databricks.sdk.service.compute import ListClustersFilterBy, ClusterSource
+
 def discover_clusters(client, workspace_id: str) -> List[Dict[str, Any]]:
     """Discover all clusters."""
     print("Discovering clusters...")
     discovered = []
+
+    filter_criteria = ListClustersFilterBy(
+        cluster_sources=[ClusterSource.API, ClusterSource.UI]
+    )
     
     try:
-        for cluster in client.clusters.list():
+        for cluster in client.clusters.list(filter_by=filter_criteria):
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] cluster/{cluster.cluster_id}")
+
             owner_email, permissions = get_permissions_safe(client, "clusters", cluster.cluster_id)
             # Prefer the owner from cluster.creator_user_name if available
             if cluster.creator_user_name:
@@ -901,9 +1033,9 @@ def discover_clusters(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} clusters")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} clusters")
     except Exception as e:
-        print(f"✗ Error discovering clusters: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering clusters: {str(e)}")
     
     return discovered
 
@@ -929,6 +1061,9 @@ def discover_pipelines(client, workspace_id: str) -> List[Dict[str, Any]]:
     try:
         for pipeline in client.pipelines.list_pipelines():
             pipeline_id = pipeline.pipeline_id
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] pipelines/{pipeline_id}")
+
             pipelines_map[pipeline_id] = {
                 'pipeline_id': pipeline_id,
                 'name': pipeline.name or 'Unnamed Pipeline',
@@ -937,7 +1072,7 @@ def discover_pipelines(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'source': 'API'
             }
             api_count += 1
-        print(f"  → Found {api_count} pipelines from API")
+        print(f"  → {datetime.now(tz)} Found {api_count} pipelines from API")
     except Exception as e:
         print(f"  ⚠ Error fetching pipelines from API: {str(e)}")
     
@@ -946,27 +1081,35 @@ def discover_pipelines(client, workspace_id: str) -> List[Dict[str, Any]]:
     new_from_system = 0
     try:
         system_pipelines_df = spark.sql(f"""
-            SELECT 
-                workspace_id, 
-                pipeline_id, 
-                pipeline_type, 
-                name, 
-                created_by, 
-                run_as, 
-                tags, 
-                settings, 
-                configuration, 
-                create_time, 
-                change_time,
-                ROW_NUMBER() OVER (PARTITION BY workspace_id, pipeline_id ORDER BY change_time DESC) AS rn
-            FROM system.lakeflow.pipelines
-            WHERE workspace_id = '{workspace_id}'
-            QUALIFY rn = 1
+			SELECT *
+			FROM (
+				SELECT 
+					workspace_id, 
+					pipeline_id, 
+					pipeline_type, 
+					name, 
+					created_by, 
+					run_as, 
+					tags, 
+					settings, 
+					configuration, 
+					create_time, 
+					change_time,
+					delete_time,
+					ROW_NUMBER() OVER (PARTITION BY workspace_id, pipeline_id ORDER BY change_time DESC) AS rn
+				FROM system.lakeflow.pipelines
+				WHERE workspace_id = '{workspace_id}'
+			) RES
+			WHERE RN = 1
+				AND DELETE_TIME IS NULL
         """)
         
         for row in system_pipelines_df.collect():
             pipeline_id = row.pipeline_id
             system_table_count += 1
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] pipelines/{pipeline_id}")
             
             # Only add if not already present from API (API takes precedence for state info)
             if pipeline_id not in pipelines_map:
@@ -981,7 +1124,7 @@ def discover_pipelines(client, workspace_id: str) -> List[Dict[str, Any]]:
                 }
                 new_from_system += 1
         
-        print(f"  → Found {system_table_count} pipelines from system.lakeflow.pipelines ({new_from_system} new)")
+        print(f"  → {datetime.now(tz)} Found {system_table_count} pipelines from system.lakeflow.pipelines ({new_from_system} new)")
     except Exception as e:
         print(f"  ⚠ Error fetching pipelines from system tables: {str(e)}")
         print(f"    (This is expected if system.lakeflow.pipelines is not accessible)")
@@ -1020,9 +1163,9 @@ def discover_pipelines(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} pipelines (API: {api_count}, System Tables: {new_from_system} new)")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} pipelines (API: {api_count}, System Tables: {new_from_system} new)")
     except Exception as e:
-        print(f"✗ Error discovering pipelines: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering pipelines: {str(e)}")
     
     return discovered
 
@@ -1051,6 +1194,9 @@ def discover_apps(client, workspace_id: str) -> List[Dict[str, Any]]:
         apps_iterator = apps_api.list()
         
         for app in apps_iterator:
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] apps/{app.name}")
+
             # Apps use get_permissions() method, not the standard permissions API
             permissions = []
             try:
@@ -1117,7 +1263,7 @@ def discover_apps(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} apps")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} apps")
     except AttributeError as ae:
         print(f"  ⚠ Apps API not available in this SDK version: {str(ae)}")
         print(f"    Consider upgrading databricks-sdk to 0.20.0 or later")
@@ -1127,7 +1273,7 @@ def discover_apps(client, workspace_id: str) -> List[Dict[str, Any]]:
             print(f"  ⚠ Apps API not available: {error_msg}")
             print(f"    Apps may not be enabled for this workspace")
         else:
-            print(f"✗ Error discovering apps: {error_msg}")
+            print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering apps: {error_msg}")
     
     return discovered
 
@@ -1140,6 +1286,9 @@ def discover_mlflow_experiments(client, workspace_id: str) -> List[Dict[str, Any
     
     try:
         for experiment in client.experiments.list_experiments():
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] experiments/{experiment.experiment_id}")
+
             # Use "experiments" for permission type (the API expects "experiments", not "mlflow-experiments")
             owner_email, permissions = get_permissions_safe(client, "experiments", experiment.experiment_id)
             
@@ -1157,9 +1306,9 @@ def discover_mlflow_experiments(client, workspace_id: str) -> List[Dict[str, Any
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} MLflow experiments")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} MLflow experiments")
     except Exception as e:
-        print(f"✗ Error discovering MLflow experiments: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering MLflow experiments: {str(e)}")
     
     return discovered
 
@@ -1209,6 +1358,9 @@ def discover_monitors(client, workspace_id: str) -> List[Dict[str, Any]]:
                                     # Permissions are derived from the monitored table's UC grants
                                     permissions = []
                                     owner_email = 'unknown'
+									
+                                    if debug_mode:
+                                        print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] monitor/{full_name}")
                                     
                                     # Get table grants for monitor permissions (use .value)
                                     try:
@@ -1251,7 +1403,7 @@ def discover_monitors(client, workspace_id: str) -> List[Dict[str, Any]]:
                                         'updated_at': datetime.utcnow()
                                     })
                                     monitor_count += 1
-                                    print(f"    Found monitor on table: {full_name}")
+                                    print(f"    {datetime.now(tz)} Found monitor on table: {full_name}")
                             except Exception:
                                 # Table doesn't have a monitor, skip
                                 pass
@@ -1260,11 +1412,11 @@ def discover_monitors(client, workspace_id: str) -> List[Dict[str, Any]]:
             except Exception:
                 pass  # Skip catalogs without access
         
-        print(f"✓ Discovered {monitor_count} data quality monitors")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {monitor_count} data quality monitors")
     except AttributeError as ae:
-        print(f"  ⚠ Quality Monitors API not available in SDK: {str(ae)}")
+        print(f"  ⚠ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Quality Monitors API not available in SDK: {str(ae)}")
     except Exception as e:
-        print(f"✗ Error discovering data quality monitors: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering data quality monitors: {str(e)}")
     
     return discovered
 
@@ -1275,8 +1427,8 @@ def discover_alerts(client, workspace_id: str) -> List[Dict[str, Any]]:
     print("Discovering alerts...")
     discovered = []
     
-    try:
-        for alert in client.alerts.list():
+    try:        
+        for alert in client.alerts.list(): #Deprecated
             owner_email = 'unknown'
             # Try different owner attributes based on SDK version
             if hasattr(alert, 'user') and alert.user and hasattr(alert.user, 'email'):
@@ -1286,6 +1438,10 @@ def discover_alerts(client, workspace_id: str) -> List[Dict[str, Any]]:
             
             # Get alert ID - could be 'id' or 'alert_id' depending on SDK version
             alert_id = getattr(alert, 'id', None) or getattr(alert, 'alert_id', None)
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] alerts/{alert_id}")
+
             if not alert_id:
                 continue
             
@@ -1316,9 +1472,9 @@ def discover_alerts(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} alerts")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} alerts")
     except Exception as e:
-        print(f"✗ Error discovering alerts: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering alerts: {str(e)}")
     
     return discovered
 
@@ -1331,6 +1487,9 @@ def discover_warehouses(client, workspace_id: str) -> List[Dict[str, Any]]:
     
     try:
         for warehouse in client.warehouses.list():
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] warehouse/{warehouse.id}")
+
             owner_email, permissions = get_permissions_safe(client, "warehouses", warehouse.id)
             if hasattr(warehouse, 'creator_name') and warehouse.creator_name:
                 owner_email = warehouse.creator_name
@@ -1352,9 +1511,9 @@ def discover_warehouses(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} SQL warehouses")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} SQL warehouses")
     except Exception as e:
-        print(f"✗ Error discovering SQL warehouses: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering SQL warehouses: {str(e)}")
     
     return discovered
 
@@ -1367,6 +1526,9 @@ def discover_cluster_policies(client, workspace_id: str) -> List[Dict[str, Any]]
     
     try:
         for policy in client.cluster_policies.list():
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] policy/{policy.policy_id}")
+
             owner_email, permissions = get_permissions_safe(client, "cluster-policies", policy.policy_id)
             if hasattr(policy, 'creator_user_name') and policy.creator_user_name:
                 owner_email = policy.creator_user_name
@@ -1388,9 +1550,9 @@ def discover_cluster_policies(client, workspace_id: str) -> List[Dict[str, Any]]
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} cluster policies")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} cluster policies")
     except Exception as e:
-        print(f"✗ Error discovering cluster policies: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering cluster policies: {str(e)}")
     
     return discovered
 
@@ -1403,6 +1565,9 @@ def discover_instance_pools(client, workspace_id: str) -> List[Dict[str, Any]]:
     
     try:
         for pool in client.instance_pools.list():
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] instance-pools/{pool.instance_pool_id}")
+
             owner_email, permissions = get_permissions_safe(client, "instance-pools", pool.instance_pool_id)
             
             discovered.append({
@@ -1422,9 +1587,9 @@ def discover_instance_pools(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} instance pools")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} instance pools")
     except Exception as e:
-        print(f"✗ Error discovering instance pools: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering instance pools: {str(e)}")
     
     return discovered
 
@@ -1439,6 +1604,9 @@ def discover_serving_endpoints(client, workspace_id: str) -> List[Dict[str, Any]
         for endpoint in client.serving_endpoints.list():
             # Skip foundation model endpoints (databricks-* endpoints) - they don't support permissions API
             # These are managed by Databricks and not user-created
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] endpoins/{endpoint.id}")
+			
             endpoint_name = endpoint.name
             if endpoint_name.startswith('databricks-'):
                 # Skip foundation model endpoints, they don't have traditional permissions
@@ -1509,9 +1677,9 @@ def discover_serving_endpoints(client, workspace_id: str) -> List[Dict[str, Any]
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} serving endpoints")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} serving endpoints")
     except Exception as e:
-        print(f"✗ Error discovering serving endpoints: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering serving endpoints: {str(e)}")
     
     return discovered
 
@@ -1528,6 +1696,8 @@ def discover_registered_models(client, workspace_id: str) -> List[Dict[str, Any]
         # List all models - can pass catalog_name and schema_name optionally
         for model in client.registered_models.list():
             full_name = model.full_name
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] models/{full_name}")
             
             # Skip system models (e.g., system.ai.*)
             if full_name.startswith('system.'):
@@ -1582,9 +1752,9 @@ def discover_registered_models(client, workspace_id: str) -> List[Dict[str, Any]
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} registered models")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} registered models")
     except Exception as e:
-        print(f"✗ Error discovering registered models: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering registered models: {str(e)}")
     
     return discovered
 
@@ -1599,6 +1769,8 @@ def discover_secret_scopes(client, workspace_id: str) -> List[Dict[str, Any]]:
         for scope in client.secrets.list_scopes():
             # Get ACLs for this secret scope
             owner_email, permissions = get_secret_acls_safe(client, scope.name)
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] scopes/{scope.name}")
             
             discovered.append({
                 'object_id': scope.name,
@@ -1616,7 +1788,7 @@ def discover_secret_scopes(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} secret scopes")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} secret scopes")
     except Exception as e:
         print(f"✗ Error discovering secret scopes: {str(e)}")
     
@@ -1634,6 +1806,9 @@ def discover_vector_search_endpoints(client, workspace_id: str) -> List[Dict[str
             owner_email = endpoint.creator if hasattr(endpoint, 'creator') and endpoint.creator else 'unknown'
             endpoint_name = endpoint.name
             endpoint_id = endpoint.id  # Use endpoint ID for permissions API
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] vector-search/{endpoint_id}")
             
             # Get permissions using SDK permissions API with "vector-search-endpoints" object type and endpoint.id
             permissions = []
@@ -1664,7 +1839,7 @@ def discover_vector_search_endpoints(client, workspace_id: str) -> List[Dict[str
                                     permission_level=perm_level
                                 ))
             except Exception as perm_error:
-                print(f"  ⚠️  Permission fetch failed for vector-search-endpoints/{endpoint_id}: {str(perm_error)}")
+                print(f"  ⚠️ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Permission fetch failed for vector-search-endpoints/{endpoint_id}: {str(perm_error)}")
             
             discovered.append({
                 'object_id': endpoint_id,  # Use endpoint ID
@@ -1684,9 +1859,9 @@ def discover_vector_search_endpoints(client, workspace_id: str) -> List[Dict[str
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} vector search endpoints")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} vector search endpoints")
     except Exception as e:
-        print(f"✗ Error discovering vector search endpoints: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering vector search endpoints: {str(e)}")
     
     return discovered
 
@@ -1707,6 +1882,9 @@ def discover_catalogs(client, workspace_id: str) -> List[Dict[str, Any]]:
     try:
         for catalog_info in client.catalogs.list():
             catalog_name = catalog_info.name
+            
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] catalog/{catalog_name}")
             
             # Skip excluded catalogs
             if catalog_name in EXCLUDED_CATALOGS:
@@ -1737,9 +1915,9 @@ def discover_catalogs(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} catalogs")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} catalogs")
     except Exception as e:
-        print(f"✗ Error discovering catalogs: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering catalogs: {str(e)}")
     
     return discovered
 
@@ -1761,6 +1939,9 @@ def discover_schemas(client, workspace_id: str) -> List[Dict[str, Any]]:
             try:
                 for schema_info in client.schemas.list(catalog_name=catalog_name):
                     schema_name = schema_info.name
+					
+                    if debug_mode:
+                        print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] schema/{catalog_name}.{schema_name}")
                     
                     # Skip excluded schemas
                     if schema_name in EXCLUDED_SCHEMAS:
@@ -1793,9 +1974,9 @@ def discover_schemas(client, workspace_id: str) -> List[Dict[str, Any]]:
             except Exception as schema_error:
                 pass  # Skip catalogs without access
         
-        print(f"✓ Discovered {len(discovered)} schemas")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} schemas")
     except Exception as e:
-        print(f"✗ Error discovering schemas: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering schemas: {str(e)}")
     
     return discovered
 
@@ -1829,6 +2010,9 @@ def discover_volumes(client, workspace_id: str) -> List[Dict[str, Any]]:
                         ):
                             full_name = f"{catalog_name}.{schema_name}.{volume.name}"
                             owner_email = volume.owner if hasattr(volume, 'owner') and volume.owner else 'unknown'
+							
+                            if debug_mode:
+                                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] volume/{full_name}")
                             
                             # Get UC grants for the volume
                             owner_from_grants, permissions = get_uc_grants_safe(client, 'VOLUME', full_name)
@@ -1858,9 +2042,9 @@ def discover_volumes(client, workspace_id: str) -> List[Dict[str, Any]]:
             except Exception as schema_error:
                 pass  # Skip catalogs without schema access
         
-        print(f"✓ Discovered {len(discovered)} volumes")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} volumes")
     except Exception as e:
-        print(f"✗ Error discovering volumes: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering volumes: {str(e)}")
     
     return discovered
 
@@ -1874,6 +2058,9 @@ def discover_connections(client, workspace_id: str) -> List[Dict[str, Any]]:
     try:
         for connection in client.connections.list():
             owner_email = connection.owner if hasattr(connection, 'owner') and connection.owner else 'unknown'
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] connection/{connecton.name}")
             
             # Get UC grants for the connection
             owner_from_grants, permissions = get_uc_grants_safe(client, 'CONNECTION', connection.name)
@@ -1897,9 +2084,9 @@ def discover_connections(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} connections")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} connections")
     except Exception as e:
-        print(f"✗ Error discovering connections: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering connections: {str(e)}")
     
     return discovered
 
@@ -1927,6 +2114,9 @@ def discover_tables(client, workspace_id: str, max_workers: int = 10) -> List[Di
         catalog_name, schema_name, table = table_info
         full_name = f"{catalog_name}.{schema_name}.{table.name}"
         owner_email = table.owner if hasattr(table, 'owner') and table.owner else 'unknown'
+		
+        if debug_mode:
+            print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] tables/{full_name}")
         
         # Get UC grants for the table
         owner_from_grants, permissions = get_uc_grants_safe(client, 'TABLE', full_name)
@@ -1996,11 +2186,11 @@ def discover_tables(client, workspace_id: str, max_workers: int = 10) -> List[Di
                         discovered.append(result)
                     completed += 1
                     if completed % 100 == 0:
-                        print(f"    Processed {completed}/{len(tables_to_process)} tables...")
+                        print(f"    [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Processed {completed}/{len(tables_to_process)} tables...")
                 except Exception as e:
                     pass  # Skip failed tables
         
-        print(f"✓ Discovered {len(discovered)} tables")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} tables")
     except Exception as e:
         print(f"✗ Error discovering tables: {str(e)}")
     
@@ -2036,6 +2226,9 @@ def discover_functions(client, workspace_id: str) -> List[Dict[str, Any]]:
                         ):
                             full_name = f"{catalog_name}.{schema_name}.{func.name}"
                             owner_email = func.owner if hasattr(func, 'owner') and func.owner else 'unknown'
+							
+                            if debug_mode:
+                                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] functions/{full_name}")
                             
                             # Get UC grants for the function
                             owner_from_grants, permissions = get_uc_grants_safe(client, 'FUNCTION', full_name)
@@ -2065,9 +2258,9 @@ def discover_functions(client, workspace_id: str) -> List[Dict[str, Any]]:
             except Exception as schema_error:
                 pass  # Skip catalogs without schema access
         
-        print(f"✓ Discovered {len(discovered)} functions")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} functions")
     except Exception as e:
-        print(f"✗ Error discovering functions: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering functions: {str(e)}")
     
     return discovered
 
@@ -2084,6 +2277,10 @@ def discover_external_locations(client, workspace_id: str) -> List[Dict[str, Any
             
             # Get UC grants for the external location
             owner_from_grants, permissions = get_uc_grants_safe(client, 'EXTERNAL_LOCATION', ext_loc.name)
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] external-locations/{ext_loc.name}")
+
             if owner_email == 'unknown' and owner_from_grants != 'unknown':
                 owner_email = owner_from_grants
             
@@ -2105,9 +2302,9 @@ def discover_external_locations(client, workspace_id: str) -> List[Dict[str, Any
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} external locations")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} external locations")
     except Exception as e:
-        print(f"✗ Error discovering external locations: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering external locations: {str(e)}")
     
     return discovered
 
@@ -2124,6 +2321,10 @@ def discover_storage_credentials(client, workspace_id: str) -> List[Dict[str, An
             
             # Get UC grants for the storage credential
             owner_from_grants, permissions = get_uc_grants_safe(client, 'STORAGE_CREDENTIAL', cred.name)
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] storages/{cred.name}")
+
             if owner_email == 'unknown' and owner_from_grants != 'unknown':
                 owner_email = owner_from_grants
             
@@ -2143,9 +2344,9 @@ def discover_storage_credentials(client, workspace_id: str) -> List[Dict[str, An
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} storage credentials")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} storage credentials")
     except Exception as e:
-        print(f"✗ Error discovering storage credentials: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering storage credentials: {str(e)}")
     
     return discovered
 
@@ -2162,6 +2363,10 @@ def discover_shares(client, workspace_id: str) -> List[Dict[str, Any]]:
             
             # Get UC grants for the share
             owner_from_grants, permissions = get_uc_grants_safe(client, 'SHARE', share.name)
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] shares/{share.name}")
+
             if owner_email == 'unknown' and owner_from_grants != 'unknown':
                 owner_email = owner_from_grants
             
@@ -2181,9 +2386,9 @@ def discover_shares(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} shares")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} shares")
     except Exception as e:
-        print(f"✗ Error discovering shares: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering shares: {str(e)}")
     
     return discovered
 
@@ -2200,6 +2405,10 @@ def discover_recipients(client, workspace_id: str) -> List[Dict[str, Any]]:
             
             # Get UC grants for the recipient
             owner_from_grants, permissions = get_uc_grants_safe(client, 'RECIPIENT', recipient.name)
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] recipient/{recipient.name}")
+
             if owner_email == 'unknown' and owner_from_grants != 'unknown':
                 owner_email = owner_from_grants
             
@@ -2220,9 +2429,9 @@ def discover_recipients(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} recipients")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} recipients")
     except Exception as e:
-        print(f"✗ Error discovering recipients: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering recipients: {str(e)}")
     
     return discovered
 
@@ -2239,6 +2448,10 @@ def discover_providers(client, workspace_id: str) -> List[Dict[str, Any]]:
             
             # Get UC grants for the provider
             owner_from_grants, permissions = get_uc_grants_safe(client, 'PROVIDER', provider.name)
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] providers/{provider.name}")
+
             if owner_email == 'unknown' and owner_from_grants != 'unknown':
                 owner_email = owner_from_grants
             
@@ -2259,9 +2472,9 @@ def discover_providers(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} providers")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} providers")
     except Exception as e:
-        print(f"✗ Error discovering providers: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering providers: {str(e)}")
     
     return discovered
 
@@ -2289,6 +2502,9 @@ def discover_clean_rooms(client, workspace_id: str) -> List[Dict[str, Any]]:
             
             # Get clean room name safely
             room_name = getattr(clean_room, 'name', 'Unknown')
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] rooms/{room_name}")
             
             discovered.append({
                 'object_id': room_name,
@@ -2308,7 +2524,7 @@ def discover_clean_rooms(client, workspace_id: str) -> List[Dict[str, Any]]:
                 'updated_at': datetime.utcnow()
             })
         
-        print(f"✓ Discovered {len(discovered)} clean rooms")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} clean rooms")
     except AttributeError as ae:
         print(f"  ⚠ Clean Rooms API not available in SDK: {str(ae)}")
         print(f"    Consider upgrading databricks-sdk to 0.20.0 or later")
@@ -2319,7 +2535,7 @@ def discover_clean_rooms(client, workspace_id: str) -> List[Dict[str, Any]]:
             print(f"  ⚠ Clean Rooms API not available: {error_msg}")
             print(f"    This feature may require a specific Databricks account configuration")
         else:
-            print(f"✗ Error discovering clean rooms: {error_msg}")
+            print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering clean rooms: {error_msg}")
     
     return discovered
 
@@ -2336,6 +2552,10 @@ def discover_metastores(client, workspace_id: str) -> List[Dict[str, Any]]:
             
             # Get UC grants for the metastore
             metastore_name = metastore.name if hasattr(metastore, 'name') else metastore.metastore_id
+			
+            if debug_mode:
+                print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] metastore/{metastore_name}")
+
             owner_from_grants, permissions = get_uc_grants_safe(client, 'METASTORE', metastore_name)
             if owner_email == 'unknown' and owner_from_grants != 'unknown':
                 owner_email = owner_from_grants
@@ -2413,13 +2633,13 @@ def get_genie_space_permissions(client, space_id: str) -> tuple:
         
         return (owner_email, permissions)
     except Exception as e:
-        print(f"  ⚠️  Permission fetch failed for genie/{space_id}: {str(e)}")
+        print(f"  ⚠️  [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Permission fetch failed for genie/{space_id}: {str(e)}")
         return ('unknown', [])
 
 def discover_genie_spaces(client, workspace_id: str) -> List[Dict[str, Any]]:
     """Discover AI/BI Genie Spaces using genie.list_spaces API with permissions."""
     discovered = []
-    print(f"  Discovering Genie Spaces...")
+    print(f"Discovering Genie Spaces...")
     
     try:
         # Check if genie API is available
@@ -2446,6 +2666,9 @@ def discover_genie_spaces(client, workspace_id: str) -> List[Dict[str, Any]]:
                 space_id = getattr(space, 'space_id', None) or getattr(space, 'id', None) or 'unknown'
                 space_name = getattr(space, 'name', None) or getattr(space, 'title', None) or 'Unknown'
                 owner_email = getattr(space, 'creator_user_name', None) or 'unknown'
+
+                if debug_mode:
+                    print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] genie/{space_id}")
                 
                 # Get permissions using the SDK permissions API with "genie" object type
                 owner_from_perms, permissions = get_genie_space_permissions(client, str(space_id))
@@ -2470,18 +2693,18 @@ def discover_genie_spaces(client, workspace_id: str) -> List[Dict[str, Any]]:
             except Exception as e:
                 print(f"    Warning: Error processing Genie space: {str(e)}")
         
-        print(f"  ✓ Discovered {len(discovered)} Genie Spaces")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} Genie Spaces")
     except AttributeError as ae:
         print(f"  ⚠ Genie API not available in SDK: {str(ae)}")
     except Exception as e:
-        print(f"  ✗ Error discovering Genie Spaces: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering Genie Spaces: {str(e)}")
     
     return discovered
 
 def discover_vector_indexes(client, workspace_id: str) -> List[Dict[str, Any]]:
     """Discover Vector Search Indexes with grants using TABLE securable type."""
     discovered = []
-    print(f"  Discovering Vector Search Indexes...")
+    print(f"Discovering Vector Search Indexes...")
     
     try:
         # First get all endpoints
@@ -2496,6 +2719,9 @@ def discover_vector_indexes(client, workspace_id: str) -> List[Dict[str, Any]]:
                 for index in indexes:
                     index_name = index.name
                     owner_email = getattr(index, 'creator', 'unknown')
+	
+                    if debug_mode:
+                        print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] vector-index/{index_name}")
                     
                     # Vector indexes use TABLE grants (INDEX_FQN)
                     owner_from_grants, permissions = get_uc_grants_safe(client, 'TABLE', index_name)
@@ -2518,16 +2744,16 @@ def discover_vector_indexes(client, workspace_id: str) -> List[Dict[str, Any]]:
             except Exception as e:
                 print(f"    Warning: Error listing indexes for endpoint {endpoint.name}: {str(e)}")
         
-        print(f"  ✓ Discovered {len(discovered)} Vector Indexes")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} Vector Indexes")
     except Exception as e:
-        print(f"  ✗ Error discovering Vector Indexes: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering Vector Indexes: {str(e)}")
     
     return discovered
 
 def discover_uc_registered_models(client, workspace_id: str) -> List[Dict[str, Any]]:
     """Discover Unity Catalog Registered Models with grants."""
     discovered = []
-    print(f"  Discovering UC Registered Models...")
+    print(f"Discovering UC Registered Models...")
     
     try:
         # List all catalogs first
@@ -2542,6 +2768,9 @@ def discover_uc_registered_models(client, workspace_id: str) -> List[Dict[str, A
                 for model in models:
                     full_name = model.full_name
                     owner_email = getattr(model, 'owner', 'unknown')
+					
+                    if debug_mode:
+                        print(f"    DEBUG: [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] models/{full_name}")
                     
                     # Get UC grants for the registered model
                     owner_from_grants, permissions = get_uc_grants_safe(client, 'REGISTERED_MODEL', full_name)
@@ -2568,9 +2797,9 @@ def discover_uc_registered_models(client, workspace_id: str) -> List[Dict[str, A
                 # Skip catalogs we can't access
                 continue
         
-        print(f"  ✓ Discovered {len(discovered)} UC Registered Models")
+        print(f"✓ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Discovered {len(discovered)} UC Registered Models")
     except Exception as e:
-        print(f"  ✗ Error discovering UC Registered Models: {str(e)}")
+        print(f"✗ [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Error discovering UC Registered Models: {str(e)}")
     
     return discovered
 
@@ -2580,7 +2809,7 @@ def discover_feature_tables(client, workspace_id: str) -> List[Dict[str, Any]]:
     Feature tables are UC tables with feature metadata, so we use TABLE securable type.
     """
     discovered = []
-    print(f"  Discovering Feature Tables...")
+    print(f"Discovering Feature Tables...")
     
     try:
         # Feature tables in Unity Catalog are just tables with feature metadata
@@ -2659,7 +2888,7 @@ all_discovered = []
 counts = {}
 
 # Use ThreadPoolExecutor for parallel discovery
-print(f"\nStarting parallel discovery for {len(object_types)} object types...")
+print(f"\n[{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Starting parallel discovery for {len(object_types)} object types...")
 print("="*80)
 
 #Client
@@ -2732,7 +2961,7 @@ if all_discovered:
     
     deduped_count = df_deduped.count()
     if deduped_count < len(all_discovered):
-        print(f"⚠️  Removed {len(all_discovered) - deduped_count} duplicate entries")
+        print(f"⚠️  [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Removed {len(all_discovered) - deduped_count} duplicate entries")
     
     # Write to table
     table_name = f"{catalog}.{schema}.governance_preapproved_objects"
@@ -2792,4 +3021,4 @@ dbutils.notebook.exit(json.dumps({
     'counts': counts,
     'total': sum(counts.values()),
     'timestamp': datetime.utcnow().isoformat()
-}))
+}, indent=3))

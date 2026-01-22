@@ -38,6 +38,9 @@ print(f"Serverless: {flagSERVERLESS}")
 # COMMAND ----------
 
 from dbruntime.databricks_repl_context import get_context
+from datetime import datetime
+import json
+
 workspaceId = get_context().workspaceId
 
 if workspaceId == "4126527463676543":
@@ -60,12 +63,43 @@ try:
 except Exception:
     valueQuery = "N"
 
+try:
+    valueFilter = dbutils.widgets.get("load_filters")
+except Exception:
+    valueFilter = "N"
+
+try:
+    valueDiscover = dbutils.widgets.get("enable_discover")
+except Exception:
+    valueDiscover = "N"
+
+try:
+    load_approved_id = True if dbutils.widgets.get("load_approved_id") == "Y" or dbutils.widgets.get("load_approved_id") == "S" else False
+except:
+    load_approved_id = False
+
 show_query = True if valueQuery == "Y" or valueQuery == "S" else False
+load_filters = True if valueFilter == "Y" or valueFilter == "S" else False
+enable_discover = True if valueDiscover == "Y" or valueDiscover == "S" else False
 
 print(f"Catalog: {catalog}")
 print(f"Schema: {schema}")
 print(f"Lookback Hours: {lookback_hours}")
 print(f"Show query: {show_query}")
+print(f"Load filters: {load_filters}")
+print(f"Enable discover: {enable_discover}")
+print(f"Load Approved identities: {load_approved_id}")
+
+# COMMAND ----------
+
+if load_filters or enable_discover or load_approved_id:
+    dbutils.notebook.exit(json.dumps({
+    'status': 'SKIPPED',
+    'reason': "Proceso abanderado para realizar el discovery de objetos, actualizar los filtros o agregar Identidades para manejo de recursos/permisos",
+    'load filters': load_filters,
+    'Enable discover': enable_discover,
+    'timestamp': datetime.utcnow().isoformat()
+}, indent=3))
 
 # COMMAND ----------
 
@@ -464,7 +498,7 @@ def build_audit_query_from_filters(
             object_type_cases.append(f"WHEN {condition} THEN '{object_type_str}'")
         
         remediation_cases.append(f"WHEN {condition} THEN '{f.remediation_action}'")
-        if(f.service_name == 'clusters' and f.action_name in ('create', 'createResult')):
+        if (f.service_name == 'clusters' and f.action_name in ('create', 'createResult')):
             condition = f"""({condition}) AND
                     NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
                     AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
@@ -473,17 +507,17 @@ def build_audit_query_from_filters(
                         OR request_params.kind='SERVERLESS_PREVIEW' AND request_params.cluster_creator='COMPUTE_GATEWAY_LAUNCHER'
                         OR request_params.kind='SERVERLESS_REPL_VM' AND request_params.cluster_creator='REPL_LAUNCHER'
                         )"""
-        elif(f.service_name == 'clusters' and f.action_name == 'delete'):
+        elif (f.service_name == 'clusters' and f.action_name == 'delete'):
             condition = f"""({condition} AND
                     NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
                     AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
                     )"""
-        elif(f.service_name == 'clusters' and f.action_name == 'changeClusterAcl'):
+        elif (f.service_name == 'clusters' and f.action_name == 'changeClusterAcl'):
             condition = f"""({condition}) AND request_params.resourceId IN 
                     (select distinct cluster_id from system.compute.clusters where cluster_source IN ('API','UI') 
                     and workspace_id IN ('{workspace_ids_str}'))
                     """
-        elif(f.service_name == 'jobs' and f.action_name == 'changeJobAcl'):
+        elif (f.service_name == 'jobs' and f.action_name == 'changeJobAcl'):
             condition = f"""({condition})
                         --Exclusión por asignación de Owner desde DataFactory
                         AND NOT (NVL(request_params.aclPermissionSet,'x') ='Owner' AND NVL(USER_AGENT,'x')='AzureDataFactory')
@@ -497,8 +531,19 @@ def build_audit_query_from_filters(
                                 OR request_params.aclPermissionSet = 'View' AND request_params.targetUserId = '83165665297392' /*BigData*/
                                 )
                             )
+                            AND (NOT EXISTS (SELECT 1 FROM SYSTEM.ACCESS.AUDIT WHERE REQUEST_ID = A.REQUEST_ID AND SERVICE_NAME = 'jobs' AND ACTION_NAME = 'submitRun' AND EVENT_DATE = A.EVENT_DATE)
+                            AND NOT NVL(REQUEST_PARAMS.aclPermissionSet,'x') = 'Owner') 
                         """
-        elif(f.service_name == 'notebook' and f.action_name == 'createNotebook') or (f.service_name == 'workspace' and f.action_name == 'createFile'):
+        elif (f.service_name == 'notebook' and f.action_name == 'createNotebook') or (f.service_name == 'workspace' and f.action_name == 'createFile'):
+            condition = f"""({condition} 
+                    AND NOT (
+                        concat('/Workspace', request_params.path) LIKE '/Workspace/Repos/%' AND REGEXP_COUNT(request_params.path,'/') > 3
+                        OR concat('/Workspace', request_params.path) LIKE '/Workspace/Users/%' AND REGEXP_COUNT(request_params.path,'/') > 2
+                        OR request_params.path LIKE '/Users/%' AND REGEXP_COUNT(request_params.path,'/') >= 2
+                        OR concat('/Workspace', request_params.path) LIKE '/Workspace/%' AND REGEXP_COUNT(concat('/Workspace', request_params.path),'/') > 2 AND NOT SPLIT_PART(concat('/Workspace', request_params.path),'/',3) IN ('Users','Repos')
+                    )
+                )"""
+        elif (f.service_name == 'workspace' and f.action_name == 'fileDelete'):
             condition = f"""({condition} 
                     AND NOT (
                         request_params.path LIKE '/Workspace/Repos/%' AND REGEXP_COUNT(request_params.path,'/') > 3
@@ -507,14 +552,10 @@ def build_audit_query_from_filters(
                         OR request_params.path LIKE '/Workspace/%' AND REGEXP_COUNT(request_params.path,'/') > 2 AND NOT SPLIT_PART(request_params.path,'/',3) IN ('Users','Repos')
                     )
                 )"""
-        elif(f.service_name == 'workspace' and f.action_name == 'fileDelete'):
-            condition = f"""({condition} 
-                    AND NOT (
-                        request_params.path LIKE '/Workspace/Repos/%' AND REGEXP_COUNT(request_params.path,'/') > 3
-                        OR request_params.path LIKE '/Workspace/Users/%' AND REGEXP_COUNT(request_params.path,'/') > 2
-                        OR request_params.path LIKE '/Users/%' AND REGEXP_COUNT(request_params.path,'/') >= 2
-                        OR request_params.path LIKE '/Workspace/%' AND REGEXP_COUNT(request_params.path,'/') > 2 AND NOT SPLIT_PART(request_params.path,'/',3) IN ('Users','Repos')
-                    )
+        elif (f.service_name == 'unityCatalog' and f.action_name == 'createTable'):
+            condition = f"""({condition}
+                ----Tablas temporales que solo existen por un corto periodo, se crean/eliminan de forma automática
+                AND NOT (user_identity.email = 'm59079@mx.att.com' and request_params.full_name_arg like 'ccampaignsp.%.ztbl_tmplmk_%')
                 )"""
         else:
             condition = f"({condition})"
@@ -556,13 +597,20 @@ def build_audit_query_from_filters(
             service_name = 'notebook' 
             AND action_name IN ('deleteNotebook', 'deleteFolder', 'deleteRepo')
             AND (
-                request_params.path LIKE '/Workspace/Users/%'
+                concat('/Workspace', request_params.path) LIKE '/Workspace/Users/%'
                 or request_params.path LIKE '/Users/%'
                 --Carpetas /Workspace/FolderName/...
-                OR NOT SPLIT_PART(request_params.path,'/',3) IN ('Users','Repos') 
-                    AND NOT REGEXP_LIKE(request_params.path,'^/Workspace/[^*]+[/.?]')
+                OR NOT SPLIT_PART(concat('/Workspace', request_params.path),'/',3) IN ('Users','Repos') 
+                    AND NOT REGEXP_LIKE(concat('/Workspace', request_params.path),'^/Workspace/[^*]+[/.?]')
                 )
-        )"""
+        )
+        --Tablas de LiveMKT que son temporales
+        AND NOT (
+            service_name == 'unityCatalog' 
+            and action_name == 'deleteTable' 
+            and user_identity.email = 'm59079@mx.att.com' 
+            and request_params.full_name_arg like 'ccampaignsp.%.ztbl_tmplmk_%'
+            )"""
     
     query = f"""
     SELECT
@@ -580,8 +628,9 @@ def build_audit_query_from_filters(
         {object_type_sql} as object_type,
         {remediation_sql} as remediation_action,
         request_params,
-        response 
-    FROM system.access.audit
+        response,
+        request_id
+    FROM system.access.audit A
     WHERE EVENT_TIME >= DATE_TRUNC('HOUR',CURRENT_TIMESTAMP()) - INTERVAL {lookback_hours} HOUR
         AND workspace_id IN ('{workspace_ids_str}')
         AND user_identity.email IS NOT NULL
@@ -615,7 +664,7 @@ if create_query:
         print(create_query)
 
     create_events_df = spark.sql(create_query)
-    print("\n\n✓ Initial result:")
+    print("\n\n✓ Initial Result:")
     create_events_df.display()
 
     # Filter out events with unknown object_id and System-User
@@ -623,7 +672,6 @@ if create_query:
         (col("object_id") != "unknown") & 
         (col("user_email") != "System-User")
     )
-    
     
     # Phase 2: Apply approved_actions filtering for identities with restrictions
     # Using native Spark operations (no UDF) for better performance
@@ -673,12 +721,12 @@ if create_query:
     create_events_count = create_events_parsed_df.count()
     print(f"⚠ Found {create_events_count} create events by unauthorized identities (after approved_actions check)")
 
-    create_events_df.groupBy("service_name","action_name").count().orderBy("count", ascending=False).display()
+    create_events_parsed_df.groupBy("service_name","action_name").count().orderBy("count", ascending=False).display()
     print("\n\n✅ Final output:")
     create_events_parsed_df.display()
 
     print(f"\n\nSummay by user_name/display name [From initial result]")
-    create_events_df.alias('evt').join(dfInfoUsers.alias('u'),on = [create_events_df.user_email == dfInfoUsers.USER_NAME], how = 'left').groupBy("evt.user_email","u.DISPLAY_NAME","u.OWNER_SUITS").count().orderBy("count", ascending=False).display()
+    create_events_parsed_df.alias('evt').join(dfInfoUsers.alias('u'),on = [create_events_parsed_df.user_email == dfInfoUsers.USER_NAME], how = 'left').groupBy("evt.user_email","u.DISPLAY_NAME","u.OWNER_SUITS").count().orderBy("count", ascending=False).display()
 else:
     create_events_parsed_df = None
     create_events_count = 0
@@ -705,7 +753,7 @@ if acl_query:
         print(acl_query)
     
     acl_events_df = spark.sql(acl_query)
-    print("\n\n✓ Initial result:")
+    print("\n\n✓ Initial Result:")
     acl_events_df.display()
 
     # Filter out events with unknown object_id and System-User
@@ -722,7 +770,7 @@ if acl_query:
     acl_events_parsed_df.display()
 
     #Summay by user_name/display name
-    acl_events_df.alias('evt').join(dfInfoUsers.alias('u'),on = [acl_events_df.user_email == dfInfoUsers.USER_NAME], how = 'left').groupBy("evt.user_email","u.DISPLAY_NAME","u.OWNER_SUITS").count().orderBy("count", ascending=False).display()    
+    acl_events_parsed_df.alias('evt').join(dfInfoUsers.alias('u'),on = [acl_events_parsed_df.user_email == dfInfoUsers.USER_NAME], how = 'left').groupBy("evt.user_email","u.DISPLAY_NAME","u.OWNER_SUITS").count().orderBy("count", ascending=False).display()    
 else:
     acl_events_parsed_df = None
     acl_events_count = 0
@@ -766,7 +814,7 @@ if delete_query:
     delete_events_parsed_df.display()
 
     #Summay by user_name/display name
-    delete_events_df.alias('evt').join(dfInfoUsers.alias('u'),on = [delete_events_df.user_email == dfInfoUsers.USER_NAME], how = 'left').groupBy("evt.user_email","u.DISPLAY_NAME","u.OWNER_SUITS").count().orderBy("count", ascending=False).display()
+    delete_events_parsed_df.alias('evt').join(dfInfoUsers.alias('u'),on = [delete_events_parsed_df.user_email == dfInfoUsers.USER_NAME], how = 'left').groupBy("evt.user_email","u.DISPLAY_NAME","u.OWNER_SUITS").count().orderBy("count", ascending=False).display()
 else:
     delete_events_parsed_df = None
     delete_events_count = 0
@@ -876,7 +924,8 @@ violations_df = all_violation_events_df.select(
     col("object_name"),
     col("is_permission_change"),
     col("is_delete_event"),
-    col("remediation_action")
+    col("remediation_action"),
+    col("request_id")
 )
 
 violations_count = violations_df.count()
@@ -1047,4 +1096,4 @@ dbutils.notebook.exit(json.dumps({
     'permission_violations': permission_violations,
     'delete_violations': delete_violations,
     'timestamp': datetime.utcnow().isoformat()
-}))
+}, indent=3))

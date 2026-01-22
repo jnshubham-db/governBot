@@ -29,6 +29,9 @@
 # COMMAND ----------
 
 from dbruntime.databricks_repl_context import get_context
+import json
+from datetime import datetime
+
 workspaceId = get_context().workspaceId
 
 if workspaceId == "4126527463676543":
@@ -44,15 +47,16 @@ print(f"Catalog: {catalog}")
 
 #dbutils.widgets.text("catalog", "qadl", "Catalog Name")
 #dbutils.widgets.text("schema", "sch_mng_admon", "Schema Name")
-dbutils.widgets.text("lookback_hours", "24", "Lookback Hours for Audit Logs")
-dbutils.widgets.dropdown("sync_creations", "Y", ["Y", "N"], "Sync New Creations")
-dbutils.widgets.dropdown("sync_permissions", "Y", ["Y", "N"], "Sync Permission Changes")
+#dbutils.widgets.text("lookback_hours", "24", "Lookback Hours for Audit Logs")
+#dbutils.widgets.dropdown("sync_creations", "Y", ["Y", "N"], "Sync New Creations")
+#dbutils.widgets.dropdown("sync_permissions", "Y", ["Y", "N"], "Sync Permission Changes")
 
 # COMMAND ----------
 
 #catalog = dbutils.widgets.get("catalog")
 #schema = dbutils.widgets.get("schema")
 lookback_hours = int(dbutils.widgets.get("lookback_hours"))
+
 try:
     sync_creations = dbutils.widgets.get("sync_creations") == "Y"
 except Exception as e:
@@ -63,16 +67,40 @@ try:
 except Exception as e:
     sync_permissions = True
 
+try:
+    load_filters = True if dbutils.widgets.get("load_filters") == "Y" or dbutils.widgets.get("load_filters") == "S" else False
+except:
+    load_filters = False
+
+try:
+    enable_discover = True if dbutils.widgets.get("enable_discover") == "Y" or dbutils.widgets.get("enable_discover") == "S" else False
+except:
+    enable_discover = False
+
 print(f"Catalog: {catalog}")
 print(f"Schema: {schema}")
 print(f"Lookback Hours: {lookback_hours}")
 print(f"Sync Creations: {sync_creations}")
 print(f"Sync Permissions: {sync_permissions}")
+print(f"Load Filters: {load_filters}")
+print(f"Enable Discover: {enable_discover}")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Initialize
+
+# COMMAND ----------
+
+if load_filters or enable_discover:
+    dbutils.notebook.exit(json.dumps({
+    'status': 'SKIPPED',
+    'reason': "Proceso abanderado para realizar el discovery de objetos o actualizar los filtros",
+    'load filters': load_filters,
+    'Enable discover': enable_discover,
+    'timestamp': datetime.utcnow().isoformat()
+}, indent=3))
+   
 
 # COMMAND ----------
 
@@ -132,6 +160,11 @@ def get_workspace_permissions(client, object_type: str, object_id: str) -> List[
     Get workspace-level permissions for an object using the permissions API.
     Returns list of {principal_email, principal_type, permission_level} dicts.
     
+    IMPORTANT: Only captures DIRECT (non-inherited) permissions.
+    Inherited permissions are excluded because:
+    1. They don't need to be reapplied during remediation - they're inherited from parent
+    2. Reapplying inherited permissions would create duplicates (one inherited, one explicit)
+    
     Uses the same approach as 04_discover.py get_permissions_safe() function.
     """
     # Map object types to permissions API object types
@@ -156,6 +189,8 @@ def get_workspace_permissions(client, object_type: str, object_id: str) -> List[
         "pipeline": "pipelines",
         "warehouse": "warehouses",
         "alert": "alerts",
+        "alerts": "alerts",
+        "alertsv2": "alertsv2",
         "apps": "apps",
         "servingEndpoint": "serving-endpoints",
         "vectorSearchEndpoint": "vector-search-endpoints",
@@ -195,7 +230,11 @@ def get_workspace_permissions(client, object_type: str, object_id: str) -> List[
                 
                 if principal_email and acl.all_permissions:
                     for perm in acl.all_permissions:
-                        # Include ALL permissions (both inherited and direct)
+                        # Skip inherited permissions - they don't need to be stored
+                        # and reapplying them would create duplicates
+                        if perm.inherited:
+                            continue
+                        
                         acl_list.append({
                             'principal_email': principal_email,
                             'principal_type': principal_type,
@@ -322,6 +361,9 @@ def get_genie_space_permissions(client, space_id: str) -> List[Dict[str, str]]:
     Get permissions for a Genie space using the permissions API.
     Returns list of {principal_email, principal_type, permission_level} dicts.
     
+    IMPORTANT: Only captures DIRECT (non-inherited) permissions.
+    Inherited permissions are excluded to prevent duplicates during remediation.
+    
     Uses the same approach as 04_discover.py get_genie_space_permissions() function.
     """
     try:
@@ -350,6 +392,11 @@ def get_genie_space_permissions(client, space_id: str) -> List[Dict[str, str]]:
                 
                 if principal_email and ace.all_permissions:
                     for perm in ace.all_permissions:
+                        # Skip inherited permissions - they don't need to be stored
+                        # and reapplying them would create duplicates
+                        if perm.inherited:
+                            continue
+                        
                         perm_level = perm.permission_level.value if hasattr(perm.permission_level, 'value') else str(perm.permission_level)
                         permissions.append({
                             'principal_email': principal_email,
@@ -599,7 +646,7 @@ def build_approved_user_query(
             object_type_cases.append(f"WHEN {condition} THEN '{object_type_str}'")
         
         # Apply custom filters per service/action - same as 05_watcher.py
-        if f.service_name == 'clusters' and f.action_name in ('create', 'createResult'):
+        if (f.service_name == 'clusters' and f.action_name in ('create', 'createResult')):
             condition = f"""({condition}) AND
                     NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
                     AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
@@ -608,17 +655,17 @@ def build_approved_user_query(
                         OR request_params.kind='SERVERLESS_PREVIEW' AND request_params.cluster_creator='COMPUTE_GATEWAY_LAUNCHER'
                         OR request_params.kind='SERVERLESS_REPL_VM' AND request_params.cluster_creator='REPL_LAUNCHER'
                         )"""
-        elif f.service_name == 'clusters' and f.action_name == 'delete':
+        elif (f.service_name == 'clusters' and f.action_name == 'delete'):
             condition = f"""({condition} AND
                     NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/jobs/%'
                     AND NOT NVL(request_params.acl_path_prefix,'x') like '/clusters/pipelines/%'
                     )"""
-        elif f.service_name == 'clusters' and f.action_name == 'changeClusterAcl':
+        elif (f.service_name == 'clusters' and f.action_name == 'changeClusterAcl'):
             condition = f"""({condition}) AND request_params.resourceId IN 
                     (select distinct cluster_id from system.compute.clusters where cluster_source IN ('API','UI') 
                     and workspace_id IN ('{workspace_ids_str}'))
                     """
-        elif f.service_name == 'jobs' and f.action_name == 'changeJobAcl':
+        elif (f.service_name == 'jobs' and f.action_name == 'changeJobAcl'):
             condition = f"""({condition})
                         --Exclusión por asignación de Owner desde DataFactory
                         AND NOT (NVL(request_params.aclPermissionSet,'x') ='Owner' AND NVL(USER_AGENT,'x')='AzureDataFactory')
@@ -632,17 +679,19 @@ def build_approved_user_query(
                                 OR request_params.aclPermissionSet = 'View' AND request_params.targetUserId = '83165665297392' /*BigData*/
                                 )
                             )
+                        AND (NOT EXISTS (SELECT 1 FROM SYSTEM.ACCESS.AUDIT WHERE REQUEST_ID = A.REQUEST_ID AND SERVICE_NAME = 'jobs' AND ACTION_NAME = 'submitRun' AND EVENT_DATE = A.EVENT_DATE)
+                            AND NOT NVL(REQUEST_PARAMS.aclPermissionSet,'x') = 'Owner')
                         """
         elif (f.service_name == 'notebook' and f.action_name == 'createNotebook') or (f.service_name == 'workspace' and f.action_name == 'createFile'):
             condition = f"""({condition} 
                     AND NOT (
-                        request_params.path LIKE '/Workspace/Repos/%' AND REGEXP_COUNT(request_params.path,'/') > 3
-                        OR request_params.path LIKE '/Workspace/Users/%' AND REGEXP_COUNT(request_params.path,'/') > 2
+                        concat('/Workspace', request_params.path) LIKE '/Workspace/Repos/%' AND REGEXP_COUNT(request_params.path,'/') > 3
+                        OR concat('/Workspace', request_params.path) LIKE '/Workspace/Users/%' AND REGEXP_COUNT(request_params.path,'/') > 2
                         OR request_params.path LIKE '/Users/%' AND REGEXP_COUNT(request_params.path,'/') >= 2
-                        OR request_params.path LIKE '/Workspace/%' AND REGEXP_COUNT(request_params.path,'/') > 2 AND NOT SPLIT_PART(request_params.path,'/',3) IN ('Users','Repos')
+                        OR concat('/Workspace', request_params.path) LIKE '/Workspace/%' AND REGEXP_COUNT(concat('/Workspace', request_params.path),'/') > 2 AND NOT SPLIT_PART(concat('/Workspace', request_params.path),'/',3) IN ('Users','Repos')
                     )
                 )"""
-        elif f.service_name == 'workspace' and f.action_name == 'fileDelete':
+        elif (f.service_name == 'workspace' and f.action_name == 'fileDelete'):
             condition = f"""({condition} 
                     AND NOT (
                         request_params.path LIKE '/Workspace/Repos/%' AND REGEXP_COUNT(request_params.path,'/') > 3
@@ -686,11 +735,11 @@ def build_approved_user_query(
             service_name = 'notebook' 
             AND action_name IN ('deleteNotebook', 'deleteFolder', 'deleteRepo')
             AND (
-                request_params.path LIKE '/Workspace/Users/%'
+                concat('/Workspace', request_params.path) LIKE '/Workspace/Users/%'
                 or request_params.path LIKE '/Users/%'
                 --Carpetas /Workspace/FolderName/...
-                OR NOT SPLIT_PART(request_params.path,'/',3) IN ('Users','Repos') 
-                    AND NOT REGEXP_LIKE(request_params.path,'^/Workspace/[^*]+[/.?]')
+                OR NOT SPLIT_PART(concat('/Workspace', request_params.path),'/',3) IN ('Users','Repos') 
+                    AND NOT REGEXP_LIKE(concat('/Workspace', request_params.path),'^/Workspace/[^*]+[/.?]')
                 )
         )"""
     
@@ -710,7 +759,7 @@ def build_approved_user_query(
         {object_type_sql} as object_type,
         request_params,
         response
-    FROM system.access.audit
+    FROM system.access.audit A
     WHERE EVENT_TIME >= DATE_TRUNC('HOUR',CURRENT_TIMESTAMP()) - INTERVAL {lookback_hours} HOUR
         AND workspace_id IN ('{workspace_ids_str}')
         AND user_identity.email IS NOT NULL
@@ -1194,4 +1243,4 @@ dbutils.notebook.exit(json.dumps({
     'permissions_updated': permissions_updated,
     'permissions_added': permissions_added,
     'timestamp': datetime.utcnow().isoformat()
-}))
+}, indent=3))

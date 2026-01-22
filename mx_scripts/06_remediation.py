@@ -27,6 +27,7 @@
 #dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
 #dbutils.widgets.text("schema", "sch_mng_admon", "Schema Name")
 dbutils.widgets.dropdown("dry_run", "true", ["true", "false"], "Dry Run Mode")
+dbutils.widgets.dropdown("auth_type","azure-client-secret",["pat","azure-client-secret"],"Auth Type")
 
 # COMMAND ----------
 
@@ -44,25 +45,77 @@ print(f"Serverless: {flagSERVERLESS}")
 
 # COMMAND ----------
 
+try:
+    auth_type = dbutils.widgets.get("auth_type")
+except Exception as e:
+    auth_type = "azure-client-secret"
+
+try:
+    load_filters = True if dbutils.widgets.get("load_filters") == "Y" or dbutils.widgets.get("load_filters") == "S" else False
+except:
+    load_filters = False
+
+try:
+    enable_discover = True if dbutils.widgets.get("enable_discover") == "Y" or dbutils.widgets.get("enable_discover") == "S" else False
+except:
+    enable_discover = False
+
+try:
+    load_approved_id = True if dbutils.widgets.get("load_approved_id") == "Y" or dbutils.widgets.get("load_approved_id") == "S" else False
+except:
+    load_approved_id = False
+
+print(f"Auth type: {auth_type}")
+print(f"Load Filters: {load_filters}")
+print(f"Enable Discover: {enable_discover}")
+print(f"Load Approved identities: {load_approved_id}")
+
+# COMMAND ----------
+
 from dbruntime.databricks_repl_context import get_context
+from datetime import datetime
+import json
+
 workspaceId = get_context().workspaceId
 
 if workspaceId == "4126527463676543":
     catalog = "qadl"
-    kv_scope = "azueskvsadl01"
-    kv_client_id_key = "b8a66bbe-9d97-4f64-bd3d-9e4768835700"
-    kv_client_secret_key = 'serviceprincipal-SPDBPROD'
-    kv_tenant_id_key = 'ApiRestTenant'
+    if auth_type == "azure-client-secret":
+        kv_scope = "azueskvsadl01"
+        kv_client_id_key = "b8a66bbe-9d97-4f64-bd3d-9e4768835700"
+        kv_client_secret_key = 'serviceprincipal-SPDBPROD'
+        kv_tenant_id_key = 'ApiRestTenant'
+    elif auth_type == "pat":
+        kv_scope = "azueskvsadl01"
+        kv_client_secret_key = "add-secret-id-token-databricks"
+        kv_client_secret_key2 = "add-secret-id-token-databricks2"
 else:
     catalog = "dlprod"
-    kv_scope = "esazukvspdl01"
-    kv_client_id_key = "7cdf5dcf-54d6-4a1c-ba10-7fd308054e87"
-    kv_client_secret_key ='serviceprincipal-SPDBPROD'
-    kv_tenant_id_key = 'ApiRestTenant'
+    if auth_type == "azure-client-secret":
+        kv_scope = "TBD" #"esazukvspdl01"
+        kv_client_id_key = "TDB" #"7cdf5dcf-54d6-4a1c-ba10-7fd308054e87"
+        kv_client_secret_key = "TBD" #"serviceprincipal-SPDBPROD"
+        kv_tenant_id_key = "TBD" #"ApiRestTenant"
+    elif auth_type == "pat":
+        kv_scope = "esazukvspcso01"
+        kv_client_secret_key = "WADatabricks"
+        kv_client_secret_key2 = "WADatabricks2"
 
 schema = "sch_mng_admon"
 
 print(f"Catalog: {catalog}")
+
+# COMMAND ----------
+
+if load_filters or enable_discover or load_approved_id:
+    dbutils.notebook.exit(json.dumps({
+    'status': 'SKIPPED',
+    'reason': "Proceso abanderado para realizar el discovery de objetos, actualizar los filtros o agregar Identidades para manejo de recursos/permisos",
+    'load filters': load_filters,
+    'Enable discover': enable_discover,
+    'load approved identities': load_approved_id,
+    'timestamp': datetime.utcnow().isoformat()
+}, indent=3))
 
 # COMMAND ----------
 
@@ -129,18 +182,30 @@ current_workspace_id = get_context().workspaceId
 print(f"Current Workspace ID: {current_workspace_id}")
 
 def create_workspace_client(workspace_url: str) -> WorkspaceClient:
-    """Create a WorkspaceClient with Azure authentication using Key Vault secrets."""
-    # Get credentials from Key Vault
-    azure_client_id = kv_client_id_key #dbutils.secrets.get(scope=kv_scope, key=kv_client_id_key)
-    client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
-    tenant_id = dbutils.secrets.get(scope=kv_scope, key=kv_tenant_id_key)
-    if kv_scope:
+    """Create a WorkspaceClient with Azure authentication using Key Vault secrets."""    
+    if kv_scope and auth_type == "azure-client-secret":
+        # Get credentials from Key Vault
+        azure_client_id = kv_client_id_key #dbutils.secrets.get(scope=kv_scope, key=kv_client_id_key)
+        client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
+        tenant_id = dbutils.secrets.get(scope=kv_scope, key=kv_tenant_id_key)
+
         return WorkspaceClient(
             host=workspace_url,
             azure_client_id=azure_client_id,
             azure_client_secret=client_secret,
             azure_tenant_id=tenant_id,
             auth_type="azure-client-secret"
+        )
+    elif kv_scope and auth_type == "pat":
+        if "4126527463676543" in workspace_url or "4782182804791024" in workspace_url:
+            client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
+        else:
+            client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key2)
+
+        return WorkspaceClient(
+            host=workspace_url,
+            token = client_secret,
+            auth_type="pat"
         )
     else:
         return WorkspaceClient()
@@ -945,8 +1010,12 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
     SECRET_SCOPE_TYPES = {"secretScope"}
     
     # Mapping from governance object types to permissions API types
+    # Valid request_object_type values: alerts, alertsv2, authorization, clusters, 
+    # cluster-policies, dashboards, dbsql-dashboards, directories, experiments, files, 
+    # genie, instance-pools, jobs, notebooks, pipelines, queries, registered-models, 
+    # repos, serving-endpoints, warehouses
     WORKSPACE_TYPE_MAP = {
-        # Workspace objects (from acl_path_prefix patterns)
+        # Workspace objects (from acl_path_prefix patterns in 03a_load_filters.py)
         "notebook": "notebooks",
         "dashboard": "dbsql-dashboards",
         "lakeview_dashboard": "dashboards",
@@ -957,7 +1026,10 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
         "repo": "repos",
         "project": "repos",
         "workspace_object": "directories",
+        # Alerts - both legacy and v2
         "alert": "alerts",
+        "alerts": "alerts",
+        "alertsv2": "alertsv2",
         # Compute
         "cluster": "clusters",
         "clusterPolicy": "cluster-policies",
@@ -1619,4 +1691,4 @@ dbutils.notebook.exit(json.dumps({
     'success_count': success_count,
     'failed_count': failed_count,
     'timestamp': datetime.utcnow().isoformat()
-}))
+}, indent=3))

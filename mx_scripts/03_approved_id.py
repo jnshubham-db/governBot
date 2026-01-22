@@ -14,6 +14,7 @@
 
 #dbutils.widgets.text("catalog", "qadl", "Catalog Name")
 #dbutils.widgets.text("schema", "sch_mng_admon", "Schema Name")
+#dbutils.widgets.dropdown("load_approved_id", "N", ["Y", "N"], "Load approved identities")
 
 # COMMAND ----------
 
@@ -32,6 +33,9 @@ print(f"Serverless: {flagSERVERLESS}")
 # COMMAND ----------
 
 from dbruntime.databricks_repl_context import get_context
+import json
+from datetime import datetime
+
 workspaceId = get_context().workspaceId
 
 if workspaceId == "4126527463676543":
@@ -49,6 +53,25 @@ print(f"Catalog: {catalog}")
 
 print(f"Catalog: {catalog}")
 print(f"Schema: {schema}")
+
+# COMMAND ----------
+
+try:
+    load_approved_id = True if dbutils.widgets.get("load_approved_id") == "Y" or dbutils.widgets.get("load_approved_id") == "S" else False
+except:
+    load_approved_id = False
+
+print(f"Load approved identities: {load_approved_id}")
+
+# COMMAND ----------
+
+if load_approved_id == False:
+    dbutils.notebook.exit(json.dumps({
+    'status': 'SKIPPED',
+    'reason': "Proceso no abanderado para realizar la actualizar las Identidades aprobadas para manejo de Recursos / Permisos",
+    'Enable discover': load_approved_id,
+    'timestamp': datetime.utcnow().isoformat()
+},indent=3))
 
 # COMMAND ----------
 
@@ -132,7 +155,7 @@ if workspaceId == "4126527463676543":
         {"name": "s12466@mx.att.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": True, "approved_actions": ["ALL"]},
         # Data engineer can only manage resources, not permissions
         {"name": "s01841@mx.att.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": False, "approved_actions": ["ALL"]},
-        {"name": "s01828@mx.att.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": False, "approved_actions": ["ALL"]},
+        {"name": "s01828@mx.att.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": True, "approved_actions": ["ALL"]},
         
         # Service Principals
         # Governance SP can do both
@@ -149,7 +172,7 @@ if workspaceId == "4126527463676543":
         # Groups
         # Data engineers group can manage resources only
         {"name": "mx_Azure_DLE_databricks_AdminUsers_qa", "type": "GROUP", "can_manage_resources": False, "can_manage_permissions": True, "approved_actions": ["ALL"]},
-        {"name": "users", "type": "GROUP", "can_manage_resources": True, "can_manage_permissions": False, "approved_actions": ["table","function","DASHBOARDS_BI","ORCHESTRATION","mlflowExperiments","registeredModel","cleanRoom","ucRegisteredModel","ucModelVersion","notebook","directory","repo","folder"]},
+        {"name": "users", "type": "GROUP", "can_manage_resources": True, "can_manage_permissions": False, "approved_actions": ["table","function","DASHBOARDS_BI","ORCHESTRATION","mlflowExperiments","registeredModel","cleanRoom","ucRegisteredModel","ucModelVersion","notebook","directory","repo","folder","featureTable","tableConstraint"]},
         # Admins group can do both
         #{"name": "admins", "type": "GROUP", "can_manage_resources": True, "can_manage_permissions": True},
     ]
@@ -159,6 +182,8 @@ else:
         # Users
         # Remover
         {"name": "s12466@mx.att.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": True, "approved_actions": ["ALL"]},
+        # Remover
+        {"name": "s12478@mx.att.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": True, "approved_actions": ["ALL"]},
         # Campaigns manager
         {"name": "m59079@mx.att.com", "type": "USER", "can_manage_resources": True, "can_manage_permissions": False, "approved_actions": ["table"]},
         # System Service Principal
@@ -454,4 +479,4 @@ dbutils.notebook.exit(json.dumps({
     'status': 'SUCCESS',
     'loaded_count': len(identity_records),
     'timestamp': datetime.utcnow().isoformat()
-}))
+}, indent=3))
