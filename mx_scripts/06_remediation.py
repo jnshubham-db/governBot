@@ -1364,10 +1364,6 @@ def _revert_workspace_permissions(client, object_id: str, object_type: str, appr
     if not permissions_api_type:
         return (False, f"Unsupported object type: {object_type}")
     
-    # Lakeview dashboards don't support direct permissions API
-    if object_type == 'lakeview_dashboard':
-        return (False, "Lakeview dashboards inherit permissions from workspace folder")
-    
     # Determine target ACLs
     if approved_perms and approved_perms[0].permissions:
         # Build ACL list from pre-approved permissions
