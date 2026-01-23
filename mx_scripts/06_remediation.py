@@ -358,12 +358,16 @@ def delete_monitor(client, table_name: str) -> Tuple[bool, Optional[str]]:
 def delete_alert(client, alert_id: str) -> Tuple[bool, Optional[str]]:
     """Delete/trash an alert."""
     try:
-        try:
-            client.alerts.delete(alert_id)
-            return (True, None)
-        except InvalidParameterValue as e:
-            client.alerts_v2.trash_alert(alert_id)
-            return (True, None)
+        client.alerts.delete(alert_id)
+        return (True, None)
+    except Exception as e:
+        return (False, str(e))
+
+def delete_alertsv2(client, alert_id: str) -> Tuple[bool, Optional[str]]:
+    """Delete/trash an alert v2."""
+    try:
+        client.alerts_v2.trash_alert(alert_id)
+        return (True, None)
     except Exception as e:
         return (False, str(e))
 
@@ -776,6 +780,7 @@ def get_delete_function(object_type: str):
         'instancePool': delete_instance_pool,
         # SQL & Warehouse
         'alert': delete_alert,
+        'alertsv2': delete_alertsv2,
         'warehouse': delete_warehouse,
         'query': delete_query,
         'dashboard': delete_dashboard,  # Handles both legacy and Lakeview
@@ -874,10 +879,11 @@ def get_resource_definition(client, object_type: str, object_id: str) -> Optiona
             definition = cluster.as_dict()
             
         elif object_type == 'alert':
-            try:
-                alert = client.alerts.get(alert_id=object_id)
-            except InvalidParameterValue as e:
-                alert = client.alerts_v2.get_alert(alert_id=object_id)
+            alert = client.alerts.get(id=object_id)
+            definition = alert.as_dict()
+            
+        elif object_type == 'alertsv2':
+            alert = client.alerts_v2.get_alert(id=object_id)
             definition = alert.as_dict()
             
         elif object_type == 'warehouse':

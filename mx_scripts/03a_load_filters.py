@@ -277,7 +277,7 @@ acl_filters_raw = [
         WHEN request_params.aclChangeResourceName LIKE 'repos/%' THEN 'repo'
         ELSE 'directory'
      END""", 
-     "request_params.resourceId", "request_params.aclChangeResourceName", "REVERT_PERMISSION", 
+     "split_part(request_params.aclChangeResourceName, '/', 2)", "request_params.aclChangeResourceName", "REVERT_PERMISSION", 
      {"resource_path": "request_params.aclChangeResourceName"}, True, 
      "Workspace ACL change (notebooks, folders, dashboards, queries, repos, alerts, experiments, genie, files)"],
     
