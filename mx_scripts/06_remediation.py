@@ -1094,7 +1094,7 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
         "mlflowExperiments": "experiments",
         # Other
         "genieSpace": "genie",
-        "dataroom": "datarooms",
+        "dataroom": "genie",
     }
     
     # Fetch pre-approved permissions from governance table
