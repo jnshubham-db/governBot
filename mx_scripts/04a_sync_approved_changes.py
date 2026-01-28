@@ -310,8 +310,8 @@ def get_uc_grants(client, object_type: str, full_name: str) -> List[Dict[str, st
                     principal_type = _detect_principal_type(principal)
                     
                     for privilege in assignment.privileges:
-                        # Handle privilege extraction - same as 04_discover.py
-                        priv_name = privilege.privilege.value if hasattr(privilege.privilege, 'value') else str(privilege.privilege)
+                        # Handle privilege extraction - privilege is a Privilege enum directly
+                        priv_name = privilege.value if hasattr(privilege, 'value') else str(privilege)
                         
                         acl_list.append({
                             'principal_email': principal,

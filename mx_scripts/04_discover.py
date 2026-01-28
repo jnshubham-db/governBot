@@ -427,7 +427,7 @@ def get_uc_grants_safe(client, securable_type: str, full_name: str, max_retries:
                     principal_type = _detect_principal_type(principal)
                     
                     for privilege in assignment.privileges:
-                        priv_name = privilege.privilege.value if hasattr(privilege.privilege, 'value') else str(privilege.privilege)
+                        priv_name = privilege.value if hasattr(privilege, 'value') else str(privilege)
                         
                         if priv_name in ['ALL_PRIVILEGES', 'OWNER']:
                             owner_email = principal
@@ -1374,7 +1374,7 @@ def discover_monitors(client, workspace_id: str) -> List[Dict[str, Any]]:
                                                 if principal and assignment.privileges:
                                                     principal_type = _detect_principal_type(principal)
                                                     for privilege in assignment.privileges:
-                                                        priv_name = privilege.privilege.value if hasattr(privilege.privilege, 'value') else str(privilege.privilege)
+                                                        priv_name = privilege.value if hasattr(privilege, 'value') else str(privilege)
                                                         if priv_name in ['ALL_PRIVILEGES', 'OWNER']:
                                                             owner_email = principal
                                                         permissions.append(Row(
@@ -1776,7 +1776,7 @@ def discover_registered_models(client, workspace_id: str) -> List[Dict[str, Any]
                         if principal and assignment.privileges:
                             principal_type = _detect_principal_type(principal)
                             for privilege in assignment.privileges:
-                                priv_name = privilege.privilege.value if hasattr(privilege.privilege, 'value') else str(privilege.privilege)
+                                priv_name = privilege.value if hasattr(privilege, 'value') else str(privilege)
                                 if priv_name in ['ALL_PRIVILEGES', 'OWNER']:
                                     owner_email = principal
                                 permissions.append(Row(
