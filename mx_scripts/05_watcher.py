@@ -911,6 +911,78 @@ if total_events_count == 0:
 
 # COMMAND ----------
 
+def _resolve_workspace_path(client: WorkspaceClient, object_type: str, object_id: str) -> str:
+    """
+    Best-effort workspace path resolution for workspace-scoped objects.
+    Returns empty string when lookup fails.
+    """
+    try:
+        if object_type == "query":
+            path = client.queries.get(id=object_id).parent_path
+        if object_type == "dashboard":
+            path = client.dashboards.get(dashboard_id=object_id).parent
+        if object_type == "lakeview_dashboard":
+            path = client.lakeview.get(dashboard_id=object_id).parent_path
+        if object_type in ["alert", "alerts"]:
+            path = client.alerts.get(id=object_id).parent_path
+        if object_type == "alertsv2":
+            path = client.alerts_v2.get_alert(id=object_id).parent_path
+        if object_type == "mlflowExperiments":
+            path = client.experiments.get_experiment(experiment_id=object_id).experiment.name
+    except Exception as e:
+        print(f"Warning: could not resolve path for {object_type} {object_id}: {str(e)}")
+        path = ""
+    return path.strip()
+
+def _is_personal_workspace(path: str) -> bool:
+    return path.startswith("/Workspace/Users/") or path.startswith("/Users/")
+
+# Filter out violations in personal workspace paths for selected object types
+workspace_path_object_types = [
+    "dashboard",
+    "lakeview_dashboard",
+    "query",
+    "alert",
+    "alerts",
+    "alertsv2",
+    "mlflowExperiments"
+]
+
+if all_violation_events_df and total_events_count > 0:
+    candidate_rows = all_violation_events_df.filter(
+        col("object_type").isin(workspace_path_object_types)
+    ).select("object_id", "object_type").distinct().collect()
+    
+    object_paths = []
+    for row in candidate_rows:
+        is_personal = _is_personal_workspace(_resolve_workspace_path(client, row.object_type, row.object_id))
+        if not is_personal:
+            object_paths.append((row.object_id))
+    
+    if object_paths:
+        paths_df = spark.createDataFrame(
+            object_paths, ["object_id"]
+        )
+        all_violation_events_df = all_violation_events_df.alias("events").join(
+            paths_df.alias("paths"), on=["object_id"], how="left"
+        ).withColumn(
+            "is_personal_workspace", when(col("paths.object_id").isNotNull(), lit(True)).otherwise(lit(False)).cast("boolean")
+        ).select("events.*", "is_personal_workspace")
+    else:
+        all_violation_events_df = all_violation_events_df.withColumn(
+            "is_personal_workspace", lit(False).cast("boolean")
+        )
+        
+    before_filter = total_events_count
+    all_violation_events_df = all_violation_events_df.filter(~col("is_personal_workspace"))
+    total_events_count = all_violation_events_df.count()
+    filtered_out = before_filter - total_events_count
+    print(f"Filtered {filtered_out} personal workspace violation(s)")
+
+    if total_events_count == 0:
+        print("\nNo violations detected after personal workspace filtering. Exiting.")
+        dbutils.notebook.exit('{"status": "SUCCESS", "violations_detected": 0}')
+
 # Select and transform violation fields
 violations_df = all_violation_events_df.select(
     col("event_id"),
