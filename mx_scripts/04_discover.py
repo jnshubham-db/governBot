@@ -413,6 +413,7 @@ def get_uc_grants_safe(client, securable_type: str, full_name: str, max_retries:
     
     sec_type = SECURABLE_TYPE_MAP.get(securable_type.upper())
     if not sec_type:
+        print(f"  ⚠️  [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Unsupported securable type '{securable_type}' for UC grants API")
         return ('unknown', [])
     
     def parse_grants(grants) -> tuple:
@@ -458,7 +459,9 @@ def get_uc_grants_safe(client, securable_type: str, full_name: str, max_retries:
             else:
                 break
     
-    # Silently fail for permission errors (don't log non-transient errors)
+    # Log the actual error for debugging (non-transient errors)
+    if last_error:
+        print(f"  ⚠️  [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] UC grants fetch failed for {securable_type}/{full_name}: {type(last_error).__name__}: {str(last_error)}")
     return ('unknown', [])
 
 # COMMAND ----------
@@ -528,6 +531,9 @@ def get_secret_acls_safe(client, scope_name: str, max_retries: int = 3, retry_de
             else:
                 break
     
+    # Log the actual error for debugging (non-transient errors)
+    if last_error:
+        print(f"  ⚠️  [{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')}] Secret scope ACLs fetch failed for scope '{scope_name}': {type(last_error).__name__}: {str(last_error)}")
     return ('unknown', [])
 
 # COMMAND ----------

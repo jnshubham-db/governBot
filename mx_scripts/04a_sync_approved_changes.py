@@ -155,10 +155,11 @@ def _detect_principal_type(principal: str) -> str:
         return 'group'
 
 
-def get_workspace_permissions(client, object_type: str, object_id: str) -> List[Dict[str, str]]:
+def get_workspace_permissions(client, object_type: str, object_id: str) -> Tuple[List[Dict[str, str]], Optional[str]]:
     """
     Get workspace-level permissions for an object using the permissions API.
-    Returns list of {principal_email, principal_type, permission_level} dicts.
+    Returns tuple of (list of {principal_email, principal_type, permission_level} dicts, error_message).
+    error_message is None if successful, contains error details if failed.
     
     IMPORTANT: Only captures DIRECT (non-inherited) permissions.
     Inherited permissions are excluded because:
@@ -201,7 +202,7 @@ def get_workspace_permissions(client, object_type: str, object_id: str) -> List[
     
     permissions_type = type_mapping.get(object_type)
     if not permissions_type:
-        return []
+        return [], f"Unsupported object type '{object_type}' for workspace permissions API"
     
     try:
         # Use positional arguments - same as 04_discover.py get_permissions_safe()
@@ -241,17 +242,18 @@ def get_workspace_permissions(client, object_type: str, object_id: str) -> List[
                             'permission_level': perm.permission_level.value
                         })
         
-        return acl_list
+        return acl_list, None
     except Exception as e:
-        # Silently fail for permission errors - same as 04_discover.py
-        print(f"  ⚠️  Permission fetch failed for {permissions_type}/{object_id}: {str(e)}")
-        return []
+        error_msg = f"Permission fetch failed for {permissions_type}/{object_id}: {type(e).__name__}: {str(e)}"
+        print(f"  ⚠️  {error_msg}")
+        return [], error_msg
 
 
-def get_uc_grants(client, object_type: str, full_name: str) -> List[Dict[str, str]]:
+def get_uc_grants(client, object_type: str, full_name: str) -> Tuple[List[Dict[str, str]], Optional[str]]:
     """
     Get Unity Catalog grants for a securable object using grants.get API.
-    Returns list of {principal_email, principal_type, permission_level} dicts.
+    Returns tuple of (list of {principal_email, principal_type, permission_level} dicts, error_message).
+    error_message is None if successful, contains error details if failed.
     
     Uses the same approach as 04_discover.py get_uc_grants_safe() function.
     """
@@ -294,7 +296,7 @@ def get_uc_grants(client, object_type: str, full_name: str) -> List[Dict[str, st
         
         sec_type = securable_type_map.get(object_type)
         if not sec_type:
-            return []
+            return [], f"Unsupported object type '{object_type}' for Unity Catalog grants API"
         
         # Use grants.get with securable_type string value (same as 04_discover.py)
         grants = client.grants.get(securable_type=sec_type, full_name=full_name)
@@ -319,17 +321,19 @@ def get_uc_grants(client, object_type: str, full_name: str) -> List[Dict[str, st
                             'permission_level': priv_name
                         })
         
-        return acl_list
+        return acl_list, None
         
     except Exception as e:
-        # Silently fail for permission errors - same as 04_discover.py
-        return []
+        error_msg = f"UC grants fetch failed for {object_type}/{full_name}: {type(e).__name__}: {str(e)}"
+        print(f"  ⚠️  {error_msg}")
+        return [], error_msg
 
 
-def get_secret_scope_acls(client, scope_name: str) -> List[Dict[str, str]]:
+def get_secret_scope_acls(client, scope_name: str) -> Tuple[List[Dict[str, str]], Optional[str]]:
     """
     Get secret scope ACLs using secrets.list_acls API.
-    Returns list of {principal_email, principal_type, permission_level} dicts.
+    Returns tuple of (list of {principal_email, principal_type, permission_level} dicts, error_message).
+    error_message is None if successful, contains error details if failed.
     
     Uses the same approach as 04_discover.py get_secret_acls_safe() function.
     """
@@ -350,16 +354,18 @@ def get_secret_scope_acls(client, scope_name: str) -> List[Dict[str, str]]:
                     'permission_level': permission
                 })
         
-        return acl_list
+        return acl_list, None
     except Exception as e:
-        # Silently fail for permission errors - same as 04_discover.py
-        return []
+        error_msg = f"Secret scope ACLs fetch failed for scope '{scope_name}': {type(e).__name__}: {str(e)}"
+        print(f"  ⚠️  {error_msg}")
+        return [], error_msg
 
 
-def get_genie_space_permissions(client, space_id: str) -> List[Dict[str, str]]:
+def get_genie_space_permissions(client, space_id: str) -> Tuple[List[Dict[str, str]], Optional[str]]:
     """
     Get permissions for a Genie space using the permissions API.
-    Returns list of {principal_email, principal_type, permission_level} dicts.
+    Returns tuple of (list of {principal_email, principal_type, permission_level} dicts, error_message).
+    error_message is None if successful, contains error details if failed.
     
     IMPORTANT: Only captures DIRECT (non-inherited) permissions.
     Inherited permissions are excluded to prevent duplicates during remediation.
@@ -404,18 +410,19 @@ def get_genie_space_permissions(client, space_id: str) -> List[Dict[str, str]]:
                             'permission_level': perm_level
                         })
         
-        return permissions
+        return permissions, None
     except Exception as e:
-        # Silently fail for permission errors - same as 04_discover.py
-        print(f"  ⚠️  Permission fetch failed for genie/{space_id}: {str(e)}")
-        return []
+        error_msg = f"Genie space permission fetch failed for space '{space_id}': {type(e).__name__}: {str(e)}"
+        print(f"  ⚠️  {error_msg}")
+        return [], error_msg
 
 
-def fetch_current_permissions(client, object_type: str, object_id: str) -> List[Dict[str, str]]:
+def fetch_current_permissions(client, object_type: str, object_id: str) -> Tuple[List[Dict[str, str]], Optional[str]]:
     """
     Fetch current permissions for an object based on its type.
     Routes to the appropriate API based on object type.
-    Returns list of {principal_email, principal_type, permission_level} dicts.
+    Returns tuple of (list of {principal_email, principal_type, permission_level} dicts, error_message).
+    error_message is None if successful, contains error details if failed.
     """
     # Unity Catalog object types
     uc_types = {
@@ -901,7 +908,9 @@ if sync_creations and resource_ids_str:
                     user_email = row.user_email
                     
                     # Fetch current permissions for this object
-                    permissions = fetch_current_permissions(client, object_type, object_id)
+                    permissions, perm_error = fetch_current_permissions(client, object_type, object_id)
+                    if perm_error:
+                        print(f"  ⚠️  {object_type}:{object_id} - {perm_error}")
                     
                     # Try to get object path if available from audit log
                     object_path = None
@@ -1060,7 +1069,7 @@ if sync_permissions and permission_ids_str:
                 print(f"\n  Processing: {object_type}:{object_id}")
                 
                 # Fetch current permissions from Databricks APIs
-                current_permissions = fetch_current_permissions(client, object_type, object_id)
+                current_permissions, fetch_error = fetch_current_permissions(client, object_type, object_id)
                 
                 if current_permissions:
                     print(f"    → Fetched {len(current_permissions)} permission entries")
@@ -1084,7 +1093,10 @@ if sync_permissions and permission_ids_str:
                     })
                     permissions_synced += 1
                 else:
-                    print(f"    → No permissions found or object not accessible")
+                    if fetch_error:
+                        print(f"    → Error fetching permissions: {fetch_error}")
+                    else:
+                        print(f"    → No permissions found (object may have no direct permissions assigned)")
             
             # Update the pre-approved objects table with new permissions
             if updated_records:
