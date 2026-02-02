@@ -9,6 +9,7 @@
 # MAGIC - UNAPPROVED_CREATION: Unauthorized resource creation
 # MAGIC - UNAUTHORIZED_PERMISSION_CHANGE: Unauthorized ACL changes
 # MAGIC - UNAUTHORIZED_DELETION: Unauthorized resource deletion
+# MAGIC - UNAUTHORIZED_ENTITLEMENT_CHANGE: Unauthorized entitlement changes
 
 # COMMAND ----------
 
@@ -394,6 +395,22 @@ print(f"Defined {len(delete_filters_raw)} delete event filters")
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Workspace Admin Features
+# MAGIC
+# MAGIC These filters detect unauthorized entitlement changes.
+
+# COMMAND ----------
+# Workspace Admin features - detect entitlement changes
+# Format: [filter_name, service_name, action_name, object_type, object_id_expr, object_name_expr, remediation_action, extra_columns, is_active, description]
+
+workspace_admin_filters_raw = [
+    ["workspace_groups_grant_change", "accounts", "changeDatabricksWorkspaceAcl", "groups", "request_params.targetUserId", "request_params.aclChangeResourceName", "REPORT_SECURITY_TEAM", {}, True, "Workspace Groups Grants change"],
+]
+print(f"Defined {len(workspace_admin_filters_raw)} entitlements change filters")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Convert to Filter Records
 
 # COMMAND ----------
@@ -424,11 +441,12 @@ def convert_to_filter_record(raw_filter, violation_type):
 create_filters = [convert_to_filter_record(f, "UNAPPROVED_CREATION") for f in create_filters_raw]
 acl_filters = [convert_to_filter_record(f, "UNAUTHORIZED_PERMISSION_CHANGE") for f in acl_filters_raw]
 delete_filters = [convert_to_filter_record(f, "UNAUTHORIZED_DELETION") for f in delete_filters_raw]
+workspace_admin_filters = [convert_to_filter_record(f, "UNAUTHORIZED_ENTITLEMENT_CHANGE") for f in workspace_admin_filters_raw]
 
 print(f"Converted {len(create_filters)} create filters")
 print(f"Converted {len(acl_filters)} ACL filters")
 print(f"Converted {len(delete_filters)} delete filters")
-
+print(f"Converted {len(workspace_admin_filters)} workspace admin filters")
 # COMMAND ----------
 
 # MAGIC %md
@@ -436,12 +454,13 @@ print(f"Converted {len(delete_filters)} delete filters")
 
 # COMMAND ----------
 
-all_filters = create_filters + acl_filters + delete_filters
+all_filters = create_filters + acl_filters + delete_filters + workspace_admin_filters
 
 print(f"\nTotal filters defined: {len(all_filters)}")
 print(f"  - Create event filters: {len(create_filters)}")
 print(f"  - ACL change filters: {len(acl_filters)}")
 print(f"  - Delete event filters: {len(delete_filters)}")
+print(f"  - Workspace admin filters: {len(workspace_admin_filters)}")
 
 # Count active vs inactive
 active_count = sum(1 for f in all_filters if f['is_active'])
@@ -570,6 +589,7 @@ Breakdown by Violation Type:
   - UNAPPROVED_CREATION:           {len(create_filters)} filters
   - UNAUTHORIZED_PERMISSION_CHANGE: {len(acl_filters)} filters
   - UNAUTHORIZED_DELETION:          {len(delete_filters)} filters
+  - UNAUTHORIZED_ENTITLEMENT_CHANGE: {len(workspace_admin_filters)} filters
 
 Active/Inactive:
   - Active filters:   {active_count}
@@ -609,5 +629,6 @@ dbutils.notebook.exit(json.dumps({
     'create_filters': len(create_filters),
     'acl_filters': len(acl_filters),
     'delete_filters': len(delete_filters),
-    'timestamp': datetime.utcnow().isoformat()
+    'workspace_admin_filters': len(workspace_admin_filters),
+    'timestamp': datetime.now().isoformat()
 }, indent=3))

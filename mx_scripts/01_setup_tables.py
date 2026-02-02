@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS {staging_table} (
     object_name STRING,
     is_permission_change BOOLEAN,
     is_delete_event BOOLEAN,
+    is_entitlement_change BOOLEAN,
     violation_type STRING,
     violation_reason STRING,
     remediation_action STRING,

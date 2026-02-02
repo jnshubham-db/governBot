@@ -240,6 +240,7 @@ new_violations_df = spark.sql(f"""
         object_name,
         is_permission_change,
         COALESCE(is_delete_event, false) as is_delete_event,
+        COALESCE(is_entitlement_change, false) as is_entitlement_change,
         violation_type,
         violation_reason,
         remediation_action,
@@ -262,6 +263,7 @@ retryable_violations_df = spark.sql(f"""
         v.object_name,
         v.is_permission_change,
         COALESCE(v.is_delete_event, false) as is_delete_event,
+        COALESCE(v.is_entitlement_change, false) as is_entitlement_change,
         v.violation_type,
         v.violation_reason,
         v.remediation_action,
@@ -1498,6 +1500,21 @@ def execute_remediation(client, violation: dict, dry_run: bool = False) -> Tuple
             else:
                 details = f"Failed to revert permissions for {object_type}: {object_name}"
                 print(f"✗ {details} - {error}")
+        
+        elif remediation_action == 'ALERT_ENTITLEMENT_CHANGE':
+            # Alert entitlement change to security team - no automated action needed
+            # This is logged in control_actions table for security team review
+            print(f"📋 Logging entitlement change event for security team review:")
+            print(f"   Object Type: {object_type}")
+            print(f"   Object ID: {object_id}")
+            print(f"   Object Name: {object_name}")
+            print(f"   Changed By: {violation.get('user_email', 'Unknown')}")
+            print(f"   Action: {violation.get('action_name', 'Unknown')}")
+            
+            success = True
+            error = None
+            details = f"Entitlement change reported for security team review: {object_type} '{object_name}' (ID: {object_id}) changed by {violation.get('user_email', 'Unknown')}"
+            print(f"✓ {details}")
         
         elif remediation_action == 'REPORT_DELETION' or remediation_action == 'REPORT_SECURITY_TEAM':
             # Report deletion to security team - no automated action needed

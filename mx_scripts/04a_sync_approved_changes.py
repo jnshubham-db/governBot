@@ -8,6 +8,7 @@
 # MAGIC **Purpose:**
 # MAGIC - Track new resources created by approved users and add them to pre-approved objects
 # MAGIC - Track permission changes made by approved users and update the permissions in pre-approved objects
+# MAGIC - Track entitlement changes made by approved users and update group metadata
 # MAGIC - Ensure the governance baseline stays current with authorized changes
 # MAGIC
 # MAGIC **Note:** This is the inverse of the watcher notebook - instead of flagging violations,
@@ -30,9 +31,11 @@
 
 from dbruntime.databricks_repl_context import get_context
 import json
+import pytz
 from datetime import datetime
 
 workspaceId = get_context().workspaceId
+tz = pytz.timezone("America/Mexico_City")
 
 if workspaceId == "4126527463676543":
     catalog = "qadl"
@@ -50,6 +53,7 @@ print(f"Catalog: {catalog}")
 #dbutils.widgets.text("lookback_hours", "24", "Lookback Hours for Audit Logs")
 #dbutils.widgets.dropdown("sync_creations", "Y", ["Y", "N"], "Sync New Creations")
 #dbutils.widgets.dropdown("sync_permissions", "Y", ["Y", "N"], "Sync Permission Changes")
+#dbutils.widgets.dropdown("sync_entitlements", "Y", ["Y", "N"], "Sync Entitlement Changes")
 
 # COMMAND ----------
 
@@ -68,6 +72,11 @@ except Exception as e:
     sync_permissions = True
 
 try:
+    sync_entitlements = dbutils.widgets.get("sync_entitlements") == "Y"
+except Exception as e:
+    sync_entitlements = True
+
+try:
     load_filters = True if dbutils.widgets.get("load_filters") == "Y" or dbutils.widgets.get("load_filters") == "S" else False
 except:
     load_filters = False
@@ -82,6 +91,7 @@ print(f"Schema: {schema}")
 print(f"Lookback Hours: {lookback_hours}")
 print(f"Sync Creations: {sync_creations}")
 print(f"Sync Permissions: {sync_permissions}")
+print(f"Sync Entitlements: {sync_entitlements}")
 print(f"Load Filters: {load_filters}")
 print(f"Enable Discover: {enable_discover}")
 
@@ -444,6 +454,29 @@ def fetch_current_permissions(client, object_type: str, object_id: str) -> Tuple
 
 # COMMAND ----------
 
+def fetch_group_details(client, group_id: str) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+    """
+    Fetch group details (name, entitlements, members) by group ID.
+    Returns tuple of (metadata_dict, error_message).
+    """
+    try:
+        group = client.groups_v2.get(group_id)
+        entitlements = [ent.as_dict() for ent in group.entitlements] if group.entitlements else []
+        members = [mem.as_dict() for mem in group.members] if group.members else []
+        group_name = group.display_name or ""
+        metadata = {
+            "entitlements": entitlements,
+            "members": members
+        }
+        return group_name, metadata, None
+    except Exception as e:
+        error_msg = f"Group fetch failed for id '{group_id}': {type(e).__name__}: {str(e)}"
+        print(f"  ⚠️  {error_msg}")
+        return None, None, error_msg
+
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Load Enabled Workspaces
 
@@ -574,9 +607,11 @@ filters_list = filters_df.collect()
 # Group filters by type
 create_filters = [f for f in filters_list if f.violation_type == 'UNAPPROVED_CREATION']
 acl_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_PERMISSION_CHANGE']
+entitlement_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_ENTITLEMENT_CHANGE']
 
 print(f"Loaded {len(create_filters)} create filters")
 print(f"Loaded {len(acl_filters)} ACL change filters")
+print(f"Loaded {len(entitlement_filters)} entitlement change filters")
 
 
 # COMMAND ----------
@@ -593,7 +628,8 @@ def build_approved_user_query(
     lookback_hours: int,
     approved_identities_str: str,
     is_permission_change: bool = False,
-    is_delete_event: bool = False
+    is_delete_event: bool = False,
+    is_entitlement_change: bool = False
 ) -> str:
     """
     Build a SQL query to find events by APPROVED users (opposite of watcher).
@@ -727,6 +763,8 @@ def build_approved_user_query(
         default_filter = f" \n\t\t\tOR (ACTION_NAME ilike '%delete%' AND NOT SERVICE_NAME IN ({excl_services_name}))"
     elif is_permission_change:
         default_filter = f" \n\t\t\tOR (ACTION_NAME ilike 'change%Acl' AND NOT ACTION_NAME IN ({excl_acls}))"
+    elif is_entitlement_change:
+        default_filter = ""
     else:
         default_filter = f" \n\t\t\tOR (ACTION_NAME ILIKE '%create%' AND NOT SERVICE_NAME IN ({excl_services_name}))"
     
@@ -761,6 +799,7 @@ def build_approved_user_query(
         user_identity.email as user_email,
         {str(is_permission_change).lower()} AS is_permission_change,
         {str(is_delete_event).lower()} AS is_delete_event,
+        {str(is_entitlement_change).lower()} AS is_entitlement_change,
         {object_id_sql} as object_id,
         {object_name_sql} as object_name,
         {object_type_sql} as object_type,
@@ -1204,6 +1243,127 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Sync Entitlement Changes by Approved Users
+
+# COMMAND ----------
+
+entitlements_synced = 0
+entitlements_updated = 0
+entitlements_added = 0
+
+if sync_entitlements and permission_ids_str and entitlement_filters:
+    print("="*80)
+    print("SYNCING ENTITLEMENT CHANGES BY APPROVED USERS")
+    print("="*80)
+    
+    entitlement_query = build_approved_user_query(
+        entitlement_filters,
+        workspace_ids_str,
+        lookback_hours,
+        permission_ids_str,
+        is_permission_change=False,
+        is_delete_event=False,
+        is_entitlement_change=True
+    )
+    
+    if entitlement_query:
+        entitlement_events_df = spark.sql(entitlement_query)
+        
+        # Filter out unknown object_ids
+        valid_entitlements_df = entitlement_events_df.filter(
+            (col("object_id") != "unknown") & 
+            (col("object_id").isNotNull())
+        )
+        
+        entitlement_count = valid_entitlements_df.count()
+        print(f"Found {entitlement_count} entitlement change events by approved users")
+        
+        if entitlement_count > 0:
+            # Get unique groups that had entitlement changes
+            groups_with_changes = valid_entitlements_df.select(
+                "workspace_id", "object_id", "object_type"
+            ).distinct()
+            
+            unique_groups = groups_with_changes.count()
+            print(f"Unique groups with entitlement changes: {unique_groups}")
+            
+            groups_list = groups_with_changes.collect()
+            updated_records = []
+            
+            print(f"\nFetching and syncing group entitlements/members...")
+            
+            for group in groups_list:
+                workspace_id = group.workspace_id
+                group_id = group.object_id
+                
+                print(f"\n  Processing group id: {group_id}")
+                
+                group_name, metadata, fetch_error = fetch_group_details(client, group_id)
+                
+                if metadata:
+                    updated_records.append({
+                        'workspace_id': workspace_id,
+                        'object_id': group_id,
+                        'object_type': 'groups',
+                        'object_name': group_name,
+                        'object_path': None,
+                        'metadata': metadata,
+                        'is_active': True,
+                        'created_at': datetime.now(tz),
+                        'updated_at': datetime.now(tz)
+                    })
+                    entitlements_synced += 1
+                else:
+                    if fetch_error:
+                        print(f"    → Error fetching group details: {fetch_error}")
+                    else:
+                        print(f"    → No group details found")
+            
+            if updated_records:
+                entitlements_schema = StructType([
+                    StructField('workspace_id', StringType(), True),
+                    StructField('object_id', StringType(), True),
+                    StructField('object_type', StringType(), True),
+                    StructField('object_name', StringType(), True),
+                    StructField('object_path', StringType(), True),
+                    StructField('owner_email', StringType(), True),
+                    StructField('permissions', ArrayType(StructType([
+                        StructField('principal_email', StringType(), True),
+                        StructField('principal_type', StringType(), True),
+                        StructField('permission_level', StringType(), True)
+                    ])), True),
+                    StructField('metadata', MapType(StringType(), StringType()), True),
+                    StructField('is_active', BooleanType(), True),
+                    StructField('created_at', TimestampType(), True),
+                    StructField('updated_at', TimestampType(), True)
+                ])
+                
+                entitlements_df = spark.createDataFrame(updated_records, schema=entitlements_schema)
+                entitlements_df.createOrReplaceTempView("entitlement_updates")
+                
+                rows_merged = spark.sql(f"""
+                    MERGE INTO {catalog}.{schema}.governance_preapproved_objects AS target
+                    USING entitlement_updates AS source
+                    ON target.workspace_id = source.workspace_id 
+                    AND target.object_id = source.object_id
+                    WHEN MATCHED THEN UPDATE SET
+                        object_name = source.object_name,
+                        metadata = source.metadata,
+                        updated_at = source.updated_at
+                    WHEN NOT MATCHED THEN INSERT *
+                """).collect()[0]
+                entitlements_updated = rows_merged[1]
+                entitlements_added = rows_merged[3]
+                
+                print(f"✓ Updated entitlements for {entitlements_updated} existing groups")
+                print(f"✓ Added {entitlements_added} new groups with entitlements")
+else:
+    print("Skipping entitlement sync (disabled, no approved identities, or no entitlement filters)")
+
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Summary
 
 # COMMAND ----------
@@ -1225,6 +1385,9 @@ print(f"  - Creations Filtered (by actions): {creations_filtered_by_actions}")
 print(f"  - Permission Changes Found:     {permissions_synced}")
 print(f"  - Permissions Updated:          {permissions_updated}")
 print(f"  - New Objects Added:            {permissions_added}")
+print(f"  - Entitlement Changes Found:    {entitlements_synced}")
+print(f"  - Entitlements Updated:         {entitlements_updated}")
+print(f"  - New Groups Added:             {entitlements_added}")
 print("="*80)
 
 # Show current state of pre-approved objects
@@ -1254,5 +1417,8 @@ dbutils.notebook.exit(json.dumps({
     'permissions_synced': permissions_synced,
     'permissions_updated': permissions_updated,
     'permissions_added': permissions_added,
-    'timestamp': datetime.utcnow().isoformat()
+    'entitlements_synced': entitlements_synced,
+    'entitlements_updated': entitlements_updated,
+    'entitlements_added': entitlements_added,
+    'timestamp': datetime.now(tz).isoformat()
 }, indent=3))

@@ -9,6 +9,7 @@
 # MAGIC - UNAPPROVED_CREATION: Unauthorized resource creation
 # MAGIC - UNAUTHORIZED_PERMISSION_CHANGE: Unauthorized ACL changes
 # MAGIC - UNAUTHORIZED_DELETION: Unauthorized resource deletion
+# MAGIC - UNAUTHORIZED_ENTITLEMENT_CHANGE: Unauthorized entitlement changes
 
 # COMMAND ----------
 
@@ -170,11 +171,13 @@ print(f"Loaded {len(filters_list)} active governance filters")
 create_filters = [f for f in filters_list if f.violation_type == 'UNAPPROVED_CREATION']
 acl_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_PERMISSION_CHANGE']
 delete_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_DELETION']
+entitlement_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_ENTITLEMENT_CHANGE']
 
 print(f"\nFilter breakdown:")
 print(f"  - Create filters: {len(create_filters)}")
 print(f"  - ACL change filters: {len(acl_filters)}")
 print(f"  - Delete filters: {len(delete_filters)}")
+print(f"  - Entitlement change filters: {len(entitlement_filters)}")
 
 # COMMAND ----------
 
@@ -439,7 +442,8 @@ def build_audit_query_from_filters(
     lookback_hours: int,
     identity_filter_str: str,
     is_permission_change: bool = False,
-    is_delete_event: bool = False
+    is_delete_event: bool = False,
+    is_entitlement_change: bool = False
 ) -> str:
     """
     Build a dynamic SQL query from governance filters.
@@ -578,6 +582,8 @@ def build_audit_query_from_filters(
         default_filter = f" \n\t\t\tOR (ACTION_NAME ilike '%delete%' AND NOT SERVICE_NAME IN ({excl_services_name}))"
     elif is_permission_change:
         default_filter = f" \n\t\t\tOR (ACTION_NAME ilike 'change%Acl' AND NOT ACTION_NAME IN ({excl_acls}))"
+    elif is_entitlement_change:
+        default_filter = ""
     else:
         default_filter = f" \n\t\t\tOR (ACTION_NAME ILIKE '%create%' AND NOT SERVICE_NAME IN ({excl_services_name}))"
     
@@ -623,6 +629,7 @@ def build_audit_query_from_filters(
         user_identity.email as user_email,
         {str(is_permission_change).lower()} AS is_permission_change,
         {str(is_delete_event).lower()} AS is_delete_event,
+        {str(is_entitlement_change).lower()} AS is_entitlement_change,
         {object_id_sql} as object_id,
         {object_name_sql} as object_name,
         {object_type_sql} as object_type,
@@ -745,7 +752,8 @@ acl_query = build_audit_query_from_filters(
     lookback_hours,
     permission_approved_identities_str,
     is_permission_change=True,
-    is_delete_event=False
+    is_delete_event=False,
+    is_entitlement_change=False
 )
 
 if acl_query:
@@ -779,6 +787,51 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Query Audit Logs for Entitlement Change Events
+
+# COMMAND ----------
+
+entitlement_query = build_audit_query_from_filters(
+    entitlement_filters,
+    workspace_ids_str,
+    lookback_hours,
+    permission_approved_identities_str,
+    is_permission_change=False,
+    is_delete_event=False,
+    is_entitlement_change=True
+)
+
+if entitlement_query:
+    if show_query:
+        print(entitlement_query)
+    
+    entitlement_events_df = spark.sql(entitlement_query)
+    print("\n\n✓ Initial Result:")
+    entitlement_events_df.display()
+    
+    # Filter out events with unknown object_id and System-User
+    entitlement_events_parsed_df = entitlement_events_df.filter(
+        (col("object_id") != "unknown") & 
+        (col("user_email") != "System-User")
+    )
+    
+    entitlement_events_count = entitlement_events_parsed_df.count()
+    print(f"⚠ Found {entitlement_events_count} entitlement change events by unauthorized identities")
+    entitlement_events_df.groupBy("service_name","action_name").count().orderBy("count", ascending=False).display()
+
+    print("\n\n✅ Final output:")
+    entitlement_events_parsed_df.display()
+
+    #Summay by user_name/display name
+    entitlement_events_parsed_df.alias('evt').join(dfInfoUsers.alias('u'),on = [entitlement_events_parsed_df.user_email == dfInfoUsers.USER_NAME], how = 'left').groupBy("evt.user_email","u.DISPLAY_NAME","u.OWNER_SUITS").count().orderBy("count", ascending=False).display()    
+else:
+    entitlement_events_parsed_df = None
+    entitlement_events_count = 0
+    print("No active entitlement change filters defined")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Query Audit Logs for Delete Events
 
 # COMMAND ----------
@@ -789,7 +842,8 @@ delete_query = build_audit_query_from_filters(
     lookback_hours,
     resource_approved_identities_str,
     is_permission_change=False,
-    is_delete_event=True
+    is_delete_event=True,
+    is_entitlement_change=False
 )
 
 if delete_query:
@@ -880,6 +934,10 @@ if unapproved_creation_events_df and unapproved_creation_count > 0:
 if acl_events_parsed_df and acl_events_count > 0:
     all_events.append(acl_events_parsed_df)
     
+# Add entitlement change events (all are violations since already filtered by unauthorized identities)
+if entitlement_events_parsed_df and entitlement_events_count > 0:
+    all_events.append(entitlement_events_parsed_df)
+    
 # Add delete events (all are violations since already filtered by unauthorized identities)
 if delete_events_parsed_df and delete_events_count > 0:
     all_events.append(delete_events_parsed_df)
@@ -898,6 +956,7 @@ else:
 print(f"\nTotal violation events: {total_events_count}")
 print(f"  - Unapproved creations: {unapproved_creation_count}")
 print(f"  - Unauthorized ACL changes: {acl_events_count}")
+print(f"  - Unauthorized entitlement changes: {entitlement_events_count}")
 print(f"  - Unauthorized deletions: {delete_events_count}")
 
 if total_events_count == 0:
@@ -996,6 +1055,7 @@ violations_df = all_violation_events_df.select(
     col("object_name"),
     col("is_permission_change"),
     col("is_delete_event"),
+    col("is_entitlement_change"),
     col("remediation_action"),
     col("request_id")
 )
@@ -1007,12 +1067,22 @@ violations_staging_df = violations_df.withColumn(
     "violation_id", expr("uuid()")
 ).withColumn(
     "violation_type", 
-    when(col("is_delete_event"), lit("UNAUTHORIZED_DELETION"))
+    when(col("is_entitlement_change"), lit("UNAUTHORIZED_ENTITLEMENT_CHANGE"))
+    .when(col("is_delete_event"), lit("UNAUTHORIZED_DELETION"))
     .when(col("is_permission_change"), lit("UNAUTHORIZED_PERMISSION_CHANGE"))
     .otherwise(lit("UNAPPROVED_CREATION"))
 ).withColumn(
     "violation_reason",
     when(
+        col("is_entitlement_change"),
+        concat(
+            lit("Unauthorized entitlement change by: "),
+            col("user_email"),
+            lit(" on "),
+            col("object_name")
+        )
+    )
+    .when(
         col("is_delete_event"),
         concat(
             lit("Unauthorized deletion of "),
@@ -1061,11 +1131,13 @@ final_violations_count = violations_staging_df.count()
 create_violations = violations_staging_df.filter(col("violation_type") == "UNAPPROVED_CREATION").count()
 permission_violations = violations_staging_df.filter(col("violation_type") == "UNAUTHORIZED_PERMISSION_CHANGE").count()
 delete_violations = violations_staging_df.filter(col("violation_type") == "UNAUTHORIZED_DELETION").count()
+entitlement_violations = violations_staging_df.filter(col("violation_type") == "UNAUTHORIZED_ENTITLEMENT_CHANGE").count()
 
 print(f"\nViolations by Type (after filtering):")
 print(f"  - Unapproved Creations:           {create_violations}")
 print(f"  - Unauthorized Permission Changes: {permission_violations}")
 print(f"  - Unauthorized Deletions:          {delete_violations}")
+print(f"  - Unauthorized Entitlement Changes: {entitlement_violations}")
 print(f"  - Total:                           {final_violations_count}")
 
 # Show sample violations
@@ -1116,6 +1188,7 @@ print(f"\nGovernance Filters Loaded:")
 print(f"  - Create filters:               {len(create_filters)}")
 print(f"  - ACL change filters:           {len(acl_filters)}")
 print(f"  - Delete filters:               {len(delete_filters)}")
+print(f"  - Entitlement change filters:   {len(entitlement_filters)}")
 print(f"\nApproved Identities for RESOURCE Management: {len(all_resource_approved_identities)}")
 print(f"  - Direct Users:                 {len(resource_approved_users)}")
 print(f"  - Direct Service Principals:    {len(resource_approved_service_principals)}")
@@ -1131,11 +1204,13 @@ print(f"  - SPs from Groups:              {len(permission_expanded_sps)}")
 print(f"\nAudit Events Found:")
 print(f"  - Create Events:                {create_events_count}")
 print(f"  - ACL Change Events:            {acl_events_count}")
+print(f"  - Entitlement Change Events:    {entitlement_events_count}")
 print(f"  - Delete Events:                {delete_events_count}")
 print(f"\nViolations Detected:")
 print(f"  - Unapproved Creations:         {create_violations}")
 print(f"  - Unauthorized Permission Changes: {permission_violations}")
 print(f"  - Unauthorized Deletions:       {delete_violations}")
+print(f"  - Unauthorized Entitlement Changes: {entitlement_violations}")
 print(f"  - Total:                        {final_violations_count}")
 print("="*80)
 
@@ -1167,5 +1242,6 @@ dbutils.notebook.exit(json.dumps({
     'create_violations': create_violations,
     'permission_violations': permission_violations,
     'delete_violations': delete_violations,
-    'timestamp': datetime.utcnow().isoformat()
+    'entitlement_violations': entitlement_violations,
+    'timestamp': datetime.now().isoformat(),
 }, indent=3))

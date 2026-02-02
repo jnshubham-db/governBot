@@ -82,7 +82,7 @@ print(f"Timezone: {tz}")
 #                           "vectorSearchEndpoints", "vectorIndexes", "catalogs", "schemas", "tables", "volumes", 
 #                           "functions", "connections", "externalLocations", "storageCredentials", "shares", 
 #                           "recipients", "providers", "cleanRooms", "metastores", "genieSpaces", 
-#                           "ucRegisteredModels", "featureTables"],
+#                           "ucRegisteredModels", "featureTables", "groups"],
 #                          "Object Types to Discover")
 #dbutils.widgets.dropdown("use_selective_filter", "Y", ["Y", "N"], "Use Selective Filtering")
 #dbutils.widgets.text("max_threads", "10", "Max Threads for Workspace Discovery")
@@ -109,7 +109,7 @@ except:
     elif workspace_id == "2535844015940567":
         workspace_url = "https://adb-2535844015940567.7.azuredatabricks.net/"
 
-all_objects = "workspace_objects,query,dashboard,jobs,cluster,pipelines,apps,mlflowExperiments,monitors,alerts,alertsv2,warehouses,clusterPolicies,instancePools,servingEndpoints,registeredModels,secretScopes,vectorSearchEndpoints,vectorIndexes,catalogs,schemas,tables,volumes,functions,connections,externalLocations,storageCredentials,shares,recipients,providers,cleanRooms,metastores,genieSpaces,ucRegisteredModels,featureTables"
+all_objects = "workspace_objects,query,dashboard,jobs,cluster,pipelines,apps,mlflowExperiments,monitors,alerts,alertsv2,warehouses,clusterPolicies,instancePools,servingEndpoints,registeredModels,secretScopes,vectorSearchEndpoints,vectorIndexes,catalogs,schemas,tables,volumes,functions,connections,externalLocations,storageCredentials,shares,recipients,providers,cleanRooms,metastores,genieSpaces,ucRegisteredModels,featureTables,groups"
 
 try:
     object_types_str = dbutils.widgets.get("object_types")
@@ -2895,6 +2895,39 @@ def discover_feature_tables(client, workspace_id: str) -> List[Dict[str, Any]]:
     
     return discovered
 
+# MAGIC %md
+# MAGIC ## Workspace Admin Features
+
+# COMMAND ----------
+def discover_groups(client: WorkspaceClient, workspace_id: str) -> List[Dict[str, Any]]:
+    """Discover all groups with grants."""
+    discovered = []
+    print(f"Discovering Groups...")
+    
+    try:
+        for group in client.groups_v2.list():
+            id = group.id
+            group_name = group.display_name
+            entitlements = [entitlement.as_dict() for entitlement in group.entitlements]
+            members = [member.as_dict() for member in group.members]
+
+            discovered.append({
+                        'object_id': id,
+                        'workspace_id': workspace_id,
+                        'object_type': 'groups',
+                        'object_name': group_name,
+                        'permissions': None,
+                        'metadata': {
+                            'entitlements': entitlements,
+                            'members': members,
+                        },
+                        'is_active': True,
+                        'created_at': datetime.now(tz),
+                        'updated_at': datetime.now(tz)})
+    except Exception as e:
+        print(f"✗ Error discovering Groups: {str(e)}")
+    
+    return discovered
 # COMMAND ----------
 
 # MAGIC %md
@@ -2947,6 +2980,8 @@ discovery_functions = {
     'vectorIndexes': discover_vector_indexes,
     'ucRegisteredModels': discover_uc_registered_models,
     'featureTables': discover_feature_tables,
+    # Workspace Admin features
+    'groups': discover_groups,
 }
 
 all_discovered = []
