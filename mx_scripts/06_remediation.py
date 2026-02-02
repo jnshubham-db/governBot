@@ -537,7 +537,7 @@ def delete_genie_space(client, space_id: str) -> Tuple[bool, Optional[str]]:
         # The SDK method may vary by version - try multiple approaches
         try:
             # Try the standard genie API
-            client.genie.delete(space_id)
+            client.genie.trash_space(space_id)
             return (True, None)
         except AttributeError:
             # Fallback: Try using the workspace API to delete the genie space
