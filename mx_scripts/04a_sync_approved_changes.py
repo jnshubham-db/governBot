@@ -54,6 +54,7 @@ print(f"Catalog: {catalog}")
 #dbutils.widgets.dropdown("sync_creations", "Y", ["Y", "N"], "Sync New Creations")
 #dbutils.widgets.dropdown("sync_permissions", "Y", ["Y", "N"], "Sync Permission Changes")
 #dbutils.widgets.dropdown("sync_entitlements", "Y", ["Y", "N"], "Sync Entitlement Changes")
+#dbutils.widgets.dropdown("sync_deletions", "Y", ["Y", "N"], "Sync Object Deletion")
 
 # COMMAND ----------
 
@@ -76,6 +77,10 @@ try:
 except Exception as e:
     sync_entitlements = True
 
+try:
+    sync_deletions = dbutils.widgets.get("sync_deletions") == "Y"
+except Exception as e:
+    sync_deletions = True
 try:
     load_filters = True if dbutils.widgets.get("load_filters") == "Y" or dbutils.widgets.get("load_filters") == "S" else False
 except:
@@ -108,7 +113,7 @@ if load_filters or enable_discover:
     'reason': "Proceso abanderado para realizar el discovery de objetos o actualizar los filtros",
     'load filters': load_filters,
     'Enable discover': enable_discover,
-    'timestamp': datetime.utcnow().isoformat()
+    'timestamp': datetime.now(tz).isoformat()
 }, indent=3))
    
 
@@ -608,10 +613,12 @@ filters_list = filters_df.collect()
 create_filters = [f for f in filters_list if f.violation_type == 'UNAPPROVED_CREATION']
 acl_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_PERMISSION_CHANGE']
 entitlement_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_ENTITLEMENT_CHANGE']
+deletion_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_DELETION']
 
 print(f"Loaded {len(create_filters)} create filters")
 print(f"Loaded {len(acl_filters)} ACL change filters")
 print(f"Loaded {len(entitlement_filters)} entitlement change filters")
+print(f"Loaded {len(deletion_filters)} deletion filters")
 
 
 # COMMAND ----------
@@ -994,8 +1001,8 @@ if sync_creations and resource_ids_str:
                         'permissions': permissions_array,
                         'metadata': metadata if metadata else None,
                         'is_active': True,
-                        'created_at': datetime.utcnow(),
-                        'updated_at': datetime.utcnow()
+                        'created_at': datetime.now(tz),
+                        'updated_at': datetime.now(tz)
                     })
                 
                 print(f"  Fetched permissions for {len(new_objects_with_permissions)} objects")
@@ -1128,7 +1135,7 @@ if sync_permissions and permission_ids_str:
                         'object_id': object_id,
                         'object_type': object_type,
                         'permissions': permissions_array,
-                        'updated_at': datetime.utcnow()
+                        'updated_at': datetime.now(tz)
                     })
                     permissions_synced += 1
                 else:
@@ -1239,6 +1246,74 @@ if sync_permissions and permission_ids_str:
 else:
     print("Skipping permission sync (disabled or no approved identities)")
 
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Sync Object Deletion by Approved Users
+
+# COMMAND ----------
+
+
+deletions_synced = 0
+
+if sync_deletions and resource_ids_str and deletion_filters:
+    print("="*80)
+    print("SYNCING OBJECT DELETION BY APPROVED USERS")
+    print("="*80)
+    
+
+    deletion_query = build_approved_user_query(
+        deletion_filters,
+        workspace_ids_str,
+        lookback_hours,
+        resource_ids_str,
+        is_permission_change=False,
+        is_delete_event=True
+    )
+    
+    if deletion_query:
+        deletion_events_df = spark.sql(deletion_query)
+        
+        # Filter out unknown object_ids
+        valid_deletions_df = deletion_events_df.filter(
+            (col("object_id") != "unknown") & 
+            (col("object_id").isNotNull())
+        )
+        
+        deletion_count = valid_deletions_df.count()
+        print(f"Found {deletion_count} deletion events by approved users")
+        
+        if deletion_count > 0:
+            # Get unique objects that had deletions
+            objects_with_deletion = valid_deletions_df.select(
+                "workspace_id", "object_id", "object_type"
+            ).distinct()
+            
+            unique_objects = objects_with_deletion.count()
+            print(f"Unique objects with deletions: {unique_objects}")
+            
+            # Update the pre-approved objects as inactive in table
+            if unique_objects > 0:
+                print(f"\n{'='*60}")
+                print("Syncing deletion events to pre-approved objects table")
+                print(f"{'='*60}")
+                
+                objects_with_deletion.createOrReplaceTempView("objects_with_deletion")
+                rows_merged = spark.sql(f"""
+                    MERGE INTO {catalog}.{schema}.governance_preapproved_objects AS target
+                    USING objects_with_deletion AS source
+                    ON target.workspace_id = source.workspace_id
+                    AND target.object_id = source.object_id
+                    AND target.is_active = true
+                    WHEN MATCHED THEN UPDATE SET
+                        is_active = false,
+                        updated_at = CURRENT_TIMESTAMP()
+                """).collect()[0]
+                deletions_synced = rows_merged[0]
+                print(f"✓ Updated {deletions_synced} objects as inactive")
+else:
+    print("Skipping deletion sync (disabled or no deletion filters or no approved identities)")
 
 # COMMAND ----------
 
@@ -1420,5 +1495,6 @@ dbutils.notebook.exit(json.dumps({
     'entitlements_synced': entitlements_synced,
     'entitlements_updated': entitlements_updated,
     'entitlements_added': entitlements_added,
+    'deletions_synced': deletions_synced,
     'timestamp': datetime.now(tz).isoformat()
 }, indent=3))
