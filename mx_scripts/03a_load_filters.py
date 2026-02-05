@@ -404,7 +404,11 @@ print(f"Defined {len(delete_filters_raw)} delete event filters")
 # Format: [filter_name, service_name, action_name, object_type, object_id_expr, object_name_expr, remediation_action, extra_columns, is_active, description]
 
 workspace_admin_filters_raw = [
-    ["workspace_groups_grant_change", "accounts", "changeDatabricksWorkspaceAcl", "groups", "request_params.targetUserId", "request_params.aclChangeResourceName", "REPORT_SECURITY_TEAM", {}, True, "Workspace Groups Grants change"],
+    ["workspace_any_users_workspace_grant_change", "accounts", "changeDatabricksWorkspaceAcl", "identity_replace", "request_params.targetUserId", "request_params.aclChangeResourceName", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace Groups/Users/SP workspace grant change"],
+    ["workspace_any_users_dbsql_grant_change", "accounts", "changeDatabricksSqlAcl", "identity_replace", "request_params.targetUserId", "request_params.aclChangeResourceName", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace Groups/Users/SP dbsql grant change"],
+    ["workspace_token_grant_change", "accounts", "changeDbTokenAcl", "tokensAcls", "concat_ws('/',workspace_id,'tokens')", "concat_ws('/',workspace_id,'tokens')", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace Tokens Grants change"],
+    ["workspace_user_set_admin", "accounts", "setAdmin", "users", "request_params.targetUserId", "request_params.targetUserName", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace User Set Admin Grant"],
+    ["workspace_user_remove_admin", "accounts", "removeAdmin", "users", "request_params.targetUserId", "request_params.targetUserName", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace User Revoked Admin Grant"],
 ]
 print(f"Defined {len(workspace_admin_filters_raw)} entitlements change filters")
 

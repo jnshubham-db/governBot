@@ -18,6 +18,14 @@
 
 # COMMAND ----------
 
+# MAGIC %pip install -U databricks-sdk
+
+# COMMAND ----------
+
+# MAGIC %restart_python
+
+# COMMAND ----------
+
 #dbutils.widgets.text("catalog", "qadl", "Catalog Name")
 #dbutils.widgets.text("schema", "sch_mng_admon", "Schema Name")
 #dbutils.widgets.text("lookback_hours", "168", "Lookback Hours for Audit Logs")
@@ -806,13 +814,97 @@ if entitlement_query:
         print(entitlement_query)
     
     entitlement_events_df = spark.sql(entitlement_query)
+    
+    # Resolve missing object_type/object_name for workspace admin filters using workspace client
+    def _resolve_identity_by_id(client: WorkspaceClient, identity_id: str) -> Tuple[str, str]:
+        """
+        Resolve identity id to (object_type, object_name).
+        Returns (None, None) when lookup fails.
+        """
+        try:
+            group = client.groups_v2.get(id=identity_id)
+            if group and group.display_name:
+                return ("groups", group.display_name)
+        except Exception:
+            pass
+        
+        try:
+            user = client.users_v2.get(id=identity_id)
+            if user and user.user_name:
+                return ("users", user.user_name)
+        except Exception:
+            pass
+        
+        try:
+            sp = client.service_principals_v2.get(id=identity_id)
+            if sp and sp.application_id:
+                return ("service_principal", sp.application_id)
+        except Exception:
+            pass
+        
+        return (None, None)
+    
+    missing_identity_ids = (
+        entitlement_events_df.filter(
+            (
+                col("object_type").isNull() |
+                (trim(col("object_type")) == "identity_replace") |
+                (col("object_type") == "unknown") |
+                col("object_name").isNull() |
+                (trim(col("object_name")) == "") |
+                (col("object_name") == "unknown")
+            )
+        )
+        .select("object_id")
+        .distinct()
+        .collect()
+    )
+    
+    if missing_identity_ids:
+        resolved_rows = []
+        for row in missing_identity_ids:
+            resolved_type, resolved_name = _resolve_identity_by_id(client, row.object_id)
+            if resolved_type or resolved_name:
+                resolved_rows.append((row.object_id, resolved_type, resolved_name))
+        
+        if resolved_rows:
+            resolved_df = spark.createDataFrame(
+                resolved_rows,
+                ["object_id", "resolved_object_type", "resolved_object_name"]
+            )
+            
+            entitlement_events_df = (
+                entitlement_events_df.alias("events")
+                .join(resolved_df.alias("resolved"), on="object_id", how="left")
+                .withColumn(
+                    "object_type",
+                    when(
+                        col("events.object_type").isNull() |
+                        (trim(col("events.object_type")) == "identity_replace") |
+                        (col("events.object_type") == "unknown"),
+                        col("resolved.resolved_object_type")
+                    ).otherwise(col("events.object_type"))
+                )
+                .withColumn(
+                    "object_name",
+                    when(
+                        col("events.object_name").isNull() |
+                        (trim(col("events.object_name")) == "") |
+                        (col("events.object_name") == "unknown"),
+                        col("resolved.resolved_object_name")
+                    ).otherwise(col("events.object_name"))
+                )
+                .drop("resolved_object_type", "resolved_object_name")
+            )
+    
     print("\n\n✓ Initial Result:")
     entitlement_events_df.display()
     
     # Filter out events with unknown object_id and System-User
     entitlement_events_parsed_df = entitlement_events_df.filter(
         (col("object_id") != "unknown") & 
-        (col("user_email") != "System-User")
+        (col("user_email") != "System-User") &
+        (col("object_name").isNotNull() | col("object_type").isNotNull())
     )
     
     entitlement_events_count = entitlement_events_parsed_df.count()

@@ -82,7 +82,7 @@ print(f"Timezone: {tz}")
 #                           "vectorSearchEndpoints", "vectorIndexes", "catalogs", "schemas", "tables", "volumes", 
 #                           "functions", "connections", "externalLocations", "storageCredentials", "shares", 
 #                           "recipients", "providers", "cleanRooms", "metastores", "genieSpaces", 
-#                           "ucRegisteredModels", "featureTables", "groups"],
+#                           "ucRegisteredModels", "featureTables", "groups", "tokensAcls", "users", "servicePrincipals"],
 #                          "Object Types to Discover")
 #dbutils.widgets.dropdown("use_selective_filter", "Y", ["Y", "N"], "Use Selective Filtering")
 #dbutils.widgets.text("max_threads", "10", "Max Threads for Workspace Discovery")
@@ -109,7 +109,7 @@ except:
     elif workspace_id == "2535844015940567":
         workspace_url = "https://adb-2535844015940567.7.azuredatabricks.net/"
 
-all_objects = "workspace_objects,query,dashboard,jobs,cluster,pipelines,apps,mlflowExperiments,monitors,alerts,alertsv2,warehouses,clusterPolicies,instancePools,servingEndpoints,registeredModels,secretScopes,vectorSearchEndpoints,vectorIndexes,catalogs,schemas,tables,volumes,functions,connections,externalLocations,storageCredentials,shares,recipients,providers,cleanRooms,metastores,genieSpaces,ucRegisteredModels,featureTables,groups"
+all_objects = "workspace_objects,query,dashboard,jobs,cluster,pipelines,apps,mlflowExperiments,monitors,alerts,alertsv2,warehouses,clusterPolicies,instancePools,servingEndpoints,registeredModels,secretScopes,vectorSearchEndpoints,vectorIndexes,catalogs,schemas,tables,volumes,functions,connections,externalLocations,storageCredentials,shares,recipients,providers,cleanRooms,metastores,genieSpaces,ucRegisteredModels,featureTables,groups,tokensAcls,users,servicePrincipals"
 
 try:
     object_types_str = dbutils.widgets.get("object_types")
@@ -172,7 +172,7 @@ if enable_discover == False:
 
 # COMMAND ----------
 
-from databricks.sdk import WorkspaceClient
+from databricks.sdk import WorkspaceClient, AccountClient
 										
 from datetime import datetime
 from typing import List, Dict, Any
@@ -213,6 +213,32 @@ def create_workspace_client(workspace_url: str) -> WorkspaceClient:
         )
     else:
         return WorkspaceClient()
+
+def create_account_client(account_url: str, account_id: str) -> AccountClient:
+    """Create a AccountClient with Azure authentication using Key Vault secrets."""    
+    if kv_scope and auth_type == "azure-client-secret":
+        # Get credentials from Key Vault
+        azure_client_id = kv_client_id_key #Service principal with account and billing access provided
+        azure_client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
+        tenant_id = dbutils.secrets.get(scope=kv_scope, key=kv_tenant_id_key)
+
+
+        return AccountClient(
+            host=account_url,
+            account_id=account_id,
+            azure_client_id=azure_client_id,
+            azure_client_secret=azure_client_secret,
+            azure_tenant_id=tenant_id,
+            auth_type="azure-client-secret"
+        )
+    elif kv_scope and auth_type == "pat":
+        return AccountClient(
+            host=account_url,
+            token = client_secret,
+            auth_type="pat"
+        )
+    else:
+        return AccountClient()
 
 # COMMAND ----------
 
@@ -2894,6 +2920,7 @@ def discover_feature_tables(client, workspace_id: str) -> List[Dict[str, Any]]:
         print(f"  ✗ Error discovering Feature Tables: {str(e)}")
     
     return discovered
+# COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Workspace Admin Features
@@ -2928,6 +2955,109 @@ def discover_groups(client: WorkspaceClient, workspace_id: str) -> List[Dict[str
         print(f"✗ Error discovering Groups: {str(e)}")
     
     return discovered
+
+def discover_users(client: WorkspaceClient, workspace_id: str) -> List[Dict[str, Any]]:
+    """Discover all users with grants."""
+    discovered = []
+    print(f"Discovering Users...")
+    
+    try:
+        for user in client.users_v2.list():
+            id = user.id
+            user_name = user.user_name
+            entitlements = [entitlement.as_dict() for entitlement in user.entitlements]
+            groups = [group.ref.split('/')[-1] for group in user.groups]
+
+            discovered.append({
+                        'object_id': id,
+                        'workspace_id': workspace_id,
+                        'object_type': 'users',
+                        'object_name': user_name,
+                        'permissions': None,
+                        'metadata': {
+                            'entitlements': entitlements,
+                            'groups': groups,
+                        },
+                        'is_active': True,
+                        'created_at': datetime.now(tz),
+                        'updated_at': datetime.now(tz)})
+    except Exception as e:
+        print(f"✗ Error discovering Users: {str(e)}")
+    
+    return discovered
+
+def discover_service_principals(client: WorkspaceClient, workspace_id: str) -> List[Dict[str, Any]]:
+    """Discover all service principals with grants."""
+    discovered = []
+    print(f"Discovering Service Principals...")
+    
+    try:
+        for sp in client.service_principals_v2.list():
+            id = sp.id
+            sp_name = sp.application_id
+            entitlements = [entitlement.as_dict() for entitlement in sp.entitlements]
+
+            discovered.append({
+                        'object_id': id,
+                        'workspace_id': workspace_id,
+                        'object_type': 'service_principal',
+                        'object_name': sp_name,
+                        'permissions': None,
+                        'metadata': {
+                            'entitlements': entitlements,
+                        },
+                        'is_active': True,
+                        'created_at': datetime.now(tz),
+                        'updated_at': datetime.now(tz)})
+    except Exception as e:
+        print(f"✗ Error discovering Service Principals: {str(e)}")
+    
+    return discovered
+
+def discover_tokens_acls(client: WorkspaceClient, workspace_id: str) -> List[Dict[str, Any]]:
+    """Discover all token grants."""
+    discovered = []
+    print(f"Discovering Tokens...")
+    try:
+        permissions = []
+        for acl in client.token_management.get_permissions().access_control_list:
+            principal_name = acl.display_name or acl.group_name
+            if acl.group_name:
+                principal_type = 'group'
+                principal_email = acl.group_name
+            elif acl.user_name:
+                principal_type = 'user'
+                principal_email = acl.user_name
+            elif acl.service_principal_name:
+                principal_type = 'service_principal'
+                principal_email = acl.service_principal_name
+            else:
+                principal_type = 'unknown'
+                principal_email = None
+            for perm in acl.all_permissions:
+                if perm.inherited or perm.permission_level is None:
+                    continue
+                permissions.append(Row(
+                    principal_email=principal_email,
+                    principal_type=principal_type,
+                    permission_level= perm.permission_level.value
+                ))
+
+        discovered.append({
+            'object_id': f'{workspace_id}/tokens',
+            'workspace_id': workspace_id,
+            'object_type': 'tokens',
+            'object_name': f'{workspace_id}/tokens',
+            'permissions': permissions,
+            'is_active': True,
+            'created_at': datetime.now(tz),
+            'updated_at': datetime.now(tz)
+        })
+    except Exception as e:
+        print(f"✗ Error discovering Tokens: {str(e)}")
+    
+    return discovered
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -2982,6 +3112,9 @@ discovery_functions = {
     'featureTables': discover_feature_tables,
     # Workspace Admin features
     'groups': discover_groups,
+    'tokensAcls': discover_tokens_acls,
+    'users': discover_users,
+    'servicePrincipals': discover_service_principals,
 }
 
 all_discovered = []

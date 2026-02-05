@@ -459,13 +459,74 @@ def fetch_current_permissions(client, object_type: str, object_id: str) -> Tuple
 
 # COMMAND ----------
 
-def fetch_group_details(client, group_id: str) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+def resolve_identity_details(client, identity_id: str) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+    """
+    Resolve identity details by identity ID.
+    Returns tuple of (metadata_dict, error_message).
+    """
+    try:
+        group = client.groups_v2.get(identity_id)
+        return 'groups', fetch_group_details(client, identity_id, group)
+    except Exception as e:
+        pass
+    try:
+        user = client.users_v2.get(identity_id)
+        return 'users', fetch_user_details(client, identity_id, user)
+    except Exception as e:
+        pass
+    try:
+        service_principal = client.service_principals_v2.get(identity_id)
+        return 'service_principal', fetch_service_principal_details(client, identity_id, service_principal)
+    except Exception as e:
+        error_msg = f"Identity fetch failed for id '{identity_id}': {type(e).__name__}: {str(e)}"
+        print(f"  ⚠️  {error_msg}")
+        return None, None, error_msg
+
+def fetch_service_principal_details(client, service_principal_id: str, service_principal_api=None) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+    """
+    Fetch service principal details (name, entitlements) by service principal ID.
+    Returns tuple of (metadata_dict, error_message).
+    """
+    try:
+        service_principal = service_principal_api if service_principal_api else client.service_principals_v2.get(service_principal_id)
+        entitlements = [ent.as_dict() for ent in service_principal.entitlements] if service_principal.entitlements else []
+        service_principal_name = service_principal.application_id or ""
+        metadata = {
+            "entitlements": entitlements
+        }
+        return service_principal_name, metadata, None
+    except Exception as e:
+        error_msg = f"Service principal fetch failed for id '{service_principal_id}': {type(e).__name__}: {str(e)}"
+        print(f"  ⚠️  {error_msg}")
+        return None, None, error_msg
+
+def fetch_user_details(client, user_id: str, user_api=None) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+    """
+    Fetch user details (name, entitlements, groups) by user ID.
+    Returns tuple of (metadata_dict, error_message).
+    """
+    try:
+        user = user_api if user_api else client.users_v2.get(user_id)
+        entitlements = [ent.as_dict() for ent in user.entitlements] if user.entitlements else []
+        groups = [group.ref.split('/')[-1] for group in user.groups] if user.groups else []
+        user_name = user.user_name or ""
+        metadata = {
+            "entitlements": entitlements,
+            "groups": groups
+        }
+        return user_name, metadata, None
+    except Exception as e:
+        error_msg = f"User fetch failed for id '{user_id}': {type(e).__name__}: {str(e)}"
+        print(f"  ⚠️  {error_msg}")
+        return None, None, error_msg
+
+def fetch_group_details(client, group_id: str, group_api=None) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
     """
     Fetch group details (name, entitlements, members) by group ID.
     Returns tuple of (metadata_dict, error_message).
     """
     try:
-        group = client.groups_v2.get(group_id)
+        group = group_api if group_api else client.groups_v2.get(group_id)
         entitlements = [ent.as_dict() for ent in group.entitlements] if group.entitlements else []
         members = [mem.as_dict() for mem in group.members] if group.members else []
         group_name = group.display_name or ""
@@ -479,6 +540,48 @@ def fetch_group_details(client, group_id: str) -> Tuple[Optional[Dict[str, str]]
         print(f"  ⚠️  {error_msg}")
         return None, None, error_msg
 
+def fetch_token_acls(client: WorkspaceClient, workspace_id: str) -> Dict[str, Any]:
+    """Discover all token grants."""
+    try:
+        permissions = []
+        for acl in client.token_management.get_permissions().access_control_list:
+            principal_name = acl.display_name or acl.group_name
+            if acl.group_name:
+                principal_type = 'group'
+                principal_email = acl.group_name
+            elif acl.user_name:
+                principal_type = 'user'
+                principal_email = acl.user_name
+            elif acl.service_principal_name:
+                principal_type = 'service_principal'
+                principal_email = acl.service_principal_name
+            else:
+                principal_type = 'unknown'
+                principal_email = None
+            for perm in acl.all_permissions:
+                if perm.inherited or perm.permission_level is None:
+                    continue
+                permissions.append(Row(
+                    principal_email=principal_email,
+                    principal_type=principal_type,
+                    permission_level= perm.permission_level.value
+                ))
+
+        discovered = {
+            'object_id': f'{workspace_id}/tokens',
+            'workspace_id': workspace_id,
+            'object_type': 'tokens',
+            'object_name': f'{workspace_id}/tokens',
+            'permissions': permissions,
+            'is_active': True,
+            'created_at': datetime.now(tz),
+            'updated_at': datetime.now(tz)
+        }
+    except Exception as e:
+        error_msg = f"✗ Error fetching Tokens: {str(e)}"
+        return {}, error_msg
+    
+    return discovered, None
 
 # COMMAND ----------
 
@@ -1321,7 +1424,6 @@ else:
 # MAGIC ## Sync Entitlement Changes by Approved Users
 
 # COMMAND ----------
-
 entitlements_synced = 0
 entitlements_updated = 0
 entitlements_added = 0
@@ -1354,33 +1456,44 @@ if sync_entitlements and permission_ids_str and entitlement_filters:
         print(f"Found {entitlement_count} entitlement change events by approved users")
         
         if entitlement_count > 0:
-            # Get unique groups that had entitlement changes
-            groups_with_changes = valid_entitlements_df.select(
-                "workspace_id", "object_id", "object_type"
-            ).distinct()
+            # Get unique identities that had entitlement changes
+            identities_with_changes = valid_entitlements_df.select(
+                "workspace_id", "object_id", "object_type", "object_name"
+            ).orderBy(col('object_name').desc()).dropDuplicates(['workspace_id', 'object_id'])
             
-            unique_groups = groups_with_changes.count()
-            print(f"Unique groups with entitlement changes: {unique_groups}")
+            unique_identities = identities_with_changes.count()
+            print(f"Unique identities with entitlement changes: {unique_identities}")
             
-            groups_list = groups_with_changes.collect()
+            identities_list = identities_with_changes.collect()
             updated_records = []
             
-            print(f"\nFetching and syncing group entitlements/members...")
+            print(f"\nFetching and syncing identity details...")
             
-            for group in groups_list:
-                workspace_id = group.workspace_id
-                group_id = group.object_id
+            for identity in identities_list:
+                workspace_id = identity.workspace_id
+                object_id = identity.object_id
+                object_type = identity.object_type
                 
-                print(f"\n  Processing group id: {group_id}")
+                print(f"\n  Processing identity type: {object_type} id: {object_id}")
                 
-                group_name, metadata, fetch_error = fetch_group_details(client, group_id)
+                if object_type == 'groups':
+                    object_name, metadata, fetch_error = fetch_group_details(client, object_id)
+                elif object_type == 'users':
+                    object_name, metadata, fetch_error = fetch_user_details(client, object_id)
+                elif object_type == 'service_principal':
+                    object_name, metadata, fetch_error = fetch_service_principal_details(client, object_id)
+                elif object_type == 'tokensAcls':
+                    metadata = None
+                    object_def, fetch_error = fetch_token_acls(client, workspace_id)
+                else:
+                    object_type, (object_name, metadata, fetch_error) = resolve_identity_details(client, object_id)
                 
                 if metadata:
                     updated_records.append({
                         'workspace_id': workspace_id,
-                        'object_id': group_id,
-                        'object_type': 'groups',
-                        'object_name': group_name,
+                        'object_id': object_id,
+                        'object_type': object_type,
+                        'object_name': object_name,
                         'object_path': None,
                         'metadata': metadata,
                         'is_active': True,
@@ -1388,11 +1501,15 @@ if sync_entitlements and permission_ids_str and entitlement_filters:
                         'updated_at': datetime.now(tz)
                     })
                     entitlements_synced += 1
+                elif object_def:
+                    updated_records.append(object_def)
+                    object_def = None
+                    entitlements_synced += 1
                 else:
                     if fetch_error:
-                        print(f"    → Error fetching group details: {fetch_error}")
+                        print(f"    → Error fetching identity details: {fetch_error}")
                     else:
-                        print(f"    → No group details found")
+                        print(f"    → No identity details found")
             
             if updated_records:
                 entitlements_schema = StructType([
@@ -1430,8 +1547,8 @@ if sync_entitlements and permission_ids_str and entitlement_filters:
                 entitlements_updated = rows_merged[1]
                 entitlements_added = rows_merged[3]
                 
-                print(f"✓ Updated entitlements for {entitlements_updated} existing groups")
-                print(f"✓ Added {entitlements_added} new groups with entitlements")
+                print(f"✓ Updated entitlements for {entitlements_updated} existing identities")
+                print(f"✓ Added {entitlements_added} new identities with entitlements")
 else:
     print("Skipping entitlement sync (disabled, no approved identities, or no entitlement filters)")
 
@@ -1462,7 +1579,7 @@ print(f"  - Permissions Updated:          {permissions_updated}")
 print(f"  - New Objects Added:            {permissions_added}")
 print(f"  - Entitlement Changes Found:    {entitlements_synced}")
 print(f"  - Entitlements Updated:         {entitlements_updated}")
-print(f"  - New Groups Added:             {entitlements_added}")
+print(f"  - New Identities Added:         {entitlements_added}")
 print("="*80)
 
 # Show current state of pre-approved objects
