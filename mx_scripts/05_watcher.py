@@ -1081,7 +1081,7 @@ def _resolve_workspace_path(client: WorkspaceClient, object_type: str, object_id
         elif object_type == "mlflowExperiments":
             path = client.experiments.get_experiment(experiment_id=object_id).experiment.name
         else:
-            print(f"{object_type} pasth resolution not implemented")
+            print(f"{object_type} path resolution not implemented")
             path = ""
     except Exception as e:
         print(f"Warning: could not resolve path for {object_type} {object_id}: {str(e)}")
