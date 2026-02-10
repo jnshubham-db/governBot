@@ -1070,16 +1070,19 @@ def _resolve_workspace_path(client: WorkspaceClient, object_type: str, object_id
     try:
         if object_type == "query":
             path = client.queries.get(id=object_id).parent_path
-        if object_type == "dashboard":
+        elif object_type == "dashboard":
             path = client.dashboards.get(dashboard_id=object_id).parent
-        if object_type == "lakeview_dashboard":
+        elif object_type == "lakeview_dashboard":
             path = client.lakeview.get(dashboard_id=object_id).parent_path
-        if object_type in ["alert", "alerts"]:
+        elif object_type in ["alert", "alerts"]:
             path = client.alerts.get(id=object_id).parent_path
-        if object_type == "alertsv2":
+        elif object_type == "alertsv2":
             path = client.alerts_v2.get_alert(id=object_id).parent_path
-        if object_type == "mlflowExperiments":
+        elif object_type == "mlflowExperiments":
             path = client.experiments.get_experiment(experiment_id=object_id).experiment.name
+        else:
+            print(f"{object_type} pasth resolution not implemented")
+            path = ""
     except Exception as e:
         print(f"Warning: could not resolve path for {object_type} {object_id}: {str(e)}")
         path = ""
@@ -1104,21 +1107,16 @@ if all_violation_events_df and total_events_count > 0:
         col("object_type").isin(workspace_path_object_types)
     ).select("object_id", "object_type").distinct().collect()
     
-    object_paths = []
+    personal_objects = []
     for row in candidate_rows:
         is_personal = _is_personal_workspace(_resolve_workspace_path(client, row.object_type, row.object_id))
-        if not is_personal:
-            object_paths.append((row.object_id))
+        if is_personal:
+            personal_objects.append((row.object_id))
     
-    if object_paths:
-        paths_df = spark.createDataFrame(
-            object_paths, ["object_id"]
+    if personal_objects:
+        all_violation_events_df = all_violation_events_df.withColumn(
+            'is_personal_workspace', when(col("object_id").isin(personal_objects), True).otherwise(False)
         )
-        all_violation_events_df = all_violation_events_df.alias("events").join(
-            paths_df.alias("paths"), on=["object_id"], how="left"
-        ).withColumn(
-            "is_personal_workspace", when(col("paths.object_id").isNotNull(), lit(True)).otherwise(lit(False)).cast("boolean")
-        ).select("events.*", "is_personal_workspace")
     else:
         all_violation_events_df = all_violation_events_df.withColumn(
             "is_personal_workspace", lit(False).cast("boolean")
