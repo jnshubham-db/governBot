@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS {workspace_config_table} (
     workspace_id STRING,
     workspace_name STRING,
     workspace_url STRING,
+    warehouse_id STRING,
     enforcement_enabled BOOLEAN,
     notification_email STRING,
     notification_slack_webhook STRING,

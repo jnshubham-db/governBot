@@ -409,8 +409,8 @@ workspace_admin_filters_raw = [
     ["workspace_token_grant_change", "accounts", "changeDbTokenAcl", "tokensAcls", "concat_ws('/',workspace_id,'tokens')", "concat_ws('/',workspace_id,'tokens')", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace Tokens Grants change"],
     ["workspace_user_set_admin", "accounts", "setAdmin", "users", "request_params.targetUserId", "request_params.targetUserName", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace User Set Admin Grant"],
     ["workspace_user_remove_admin", "accounts", "removeAdmin", "users", "request_params.targetUserId", "request_params.targetUserName", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace User Revoked Admin Grant"],
-    ["any_file_grant_change", "sqlPermissions", "grantPermissions", "any_file_permissions", "concat_ws('/',workspace_id,'any_file')", "concat_ws('/',workspace_id,'any_file')", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace Any Files ACL Grant"],
-    ["any_file_revoke_change", "sqlPermissions", "revokePermissions", "any_file_permissions", "concat_ws('/',workspace_id,'any_file')", "concat_ws('/',workspace_id,'any_file')", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace Any Files ACL Revoke"],
+    ["any_file_grant_change", "sqlPermissions", "grantPermission", "any_file_permissions", "concat_ws('/',workspace_id,'any_files')", "request_params.permission", "REVERT_ENTITLEMENT_CHANGE", {}, True, "Workspace Any Files ACL Grant"],
+    ["any_file_revoke_change", "sqlPermissions", "revokePermission", "any_file_permissions", "concat_ws('/',workspace_id,'any_files')", "request_params.permission", "REVERT_ENTITLEMENT_CHANGE", {}, True, "Workspace Any Files ACL Revoke"],
 ]
 print(f"Defined {len(workspace_admin_filters_raw)} entitlements change filters")
 

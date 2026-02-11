@@ -37,14 +37,7 @@ from datetime import datetime
 workspaceId = get_context().workspaceId
 tz = pytz.timezone("America/Mexico_City")
 
-if workspaceId == "4126527463676543":
-    catalog = "qadl"
-else:
-    catalog = "dlprod"
-
 schema = "sch_mng_admon"
-
-print(f"Catalog: {catalog}")
 
 # COMMAND ----------
 
@@ -55,12 +48,40 @@ print(f"Catalog: {catalog}")
 #dbutils.widgets.dropdown("sync_permissions", "Y", ["Y", "N"], "Sync Permission Changes")
 #dbutils.widgets.dropdown("sync_entitlements", "Y", ["Y", "N"], "Sync Entitlement Changes")
 #dbutils.widgets.dropdown("sync_deletions", "Y", ["Y", "N"], "Sync Object Deletion")
+dbutils.widgets.dropdown("auth_type","azure-client-secret",["pat","azure-client-secret"],"Auth Type")
 
 # COMMAND ----------
 
 #catalog = dbutils.widgets.get("catalog")
 #schema = dbutils.widgets.get("schema")
 lookback_hours = int(dbutils.widgets.get("lookback_hours"))
+try:
+    auth_type = dbutils.widgets.get("auth_type")
+except Exception as e:
+    auth_type = "azure-client-secret"
+
+if workspaceId == "4126527463676543":
+    catalog = "qadl"
+    if auth_type == "azure-client-secret":
+        kv_scope = "azueskvsadl01"
+        kv_client_id_key = "b8a66bbe-9d97-4f64-bd3d-9e4768835700"
+        kv_client_secret_key = 'serviceprincipal-SPDBPROD'
+        kv_tenant_id_key = 'ApiRestTenant'
+    elif auth_type == "pat":
+        kv_scope = "azueskvsadl01"
+        kv_client_secret_key = "add-secret-id-token-databricks"
+        kv_client_secret_key2 = "add-secret-id-token-databricks2"
+else:
+    catalog = "dlprod"
+    if auth_type == "azure-client-secret":
+        kv_scope = "TBD" #"esazukvspdl01"
+        kv_client_id_key = "TDB" #"7cdf5dcf-54d6-4a1c-ba10-7fd308054e87"
+        kv_client_secret_key = "TBD" #"serviceprincipal-SPDBPROD"
+        kv_tenant_id_key = "TBD" #"ApiRestTenant"
+    elif auth_type == "pat":
+        kv_scope = "esazukvspcso01"
+        kv_client_secret_key = "WADatabricks"
+        kv_client_secret_key2 = "WADatabricks2"
 
 try:
     sync_creations = dbutils.widgets.get("sync_creations") == "Y"
@@ -116,6 +137,83 @@ if load_filters or enable_discover:
     'timestamp': datetime.now(tz).isoformat()
 }, indent=3))
    
+# COMMAND ----------
+
+# Get current workspace ID
+current_workspace_id = get_context().workspaceId
+print(f"Current Workspace ID: {current_workspace_id}")
+
+def create_workspace_client(workspace_url: str) -> WorkspaceClient:
+    """Create a WorkspaceClient with Azure authentication using Key Vault secrets."""    
+    if kv_scope and auth_type == "azure-client-secret":
+        # Get credentials from Key Vault
+        azure_client_id = kv_client_id_key #dbutils.secrets.get(scope=kv_scope, key=kv_client_id_key)
+        client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
+        tenant_id = dbutils.secrets.get(scope=kv_scope, key=kv_tenant_id_key)
+
+        return WorkspaceClient(
+            host=workspace_url,
+            azure_client_id=azure_client_id,
+            azure_client_secret=client_secret,
+            azure_tenant_id=tenant_id,
+            auth_type="azure-client-secret"
+        )
+    elif kv_scope and auth_type == "pat":
+        if "4126527463676543" in workspace_url or "4782182804791024" in workspace_url:
+            client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
+        else:
+            client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key2)
+
+        return WorkspaceClient(
+            host=workspace_url,
+            token = client_secret,
+            auth_type="pat"
+        )
+    else:
+        return WorkspaceClient()
+
+
+# COMMAND ----------
+
+# Load enabled workspaces first to use as filter
+enabled_workspaces_df = spark.sql(f"""
+    SELECT 
+        workspace_id,
+        workspace_url,
+        workspace_name,
+        enabled_object_types,
+        max_retry_attempts
+    FROM {catalog}.{schema}.governance_config_workspaces
+    WHERE enforcement_enabled = true
+""")
+
+enabled_workspace_ids = [row.workspace_id for row in enabled_workspaces_df.collect()]
+workspace_urls = [row.workspace_url for row in enabled_workspaces_df.collect()]
+workspace_ids = [row.workspace_id for row in enabled_workspaces_df.collect()]
+print(f"Governance enabled for {len(enabled_workspace_ids)} workspace(s)")
+
+if not enabled_workspace_ids:
+    print("WARNING: No workspaces have governance enabled. Exiting.")
+    dbutils.notebook.exit('{"status": "SKIPPED", "reason": "No enabled workspaces"}')
+
+# Build the workspace IDs string for SQL IN clause
+workspace_ids_str = "', '".join([str(wid) for wid in enabled_workspace_ids])
+print(f"Workspace Ids: {workspace_ids_str}")
+
+# Create workspace clients for each workspace with violations
+workspace_clients = {}
+for ws_id, ws_url in zip(workspace_ids, workspace_urls):
+    # Check if we have Key Vault scope configured and workspace URL
+    if kv_scope and ws_url:
+        try:
+            workspace_clients[ws_id] = create_workspace_client(ws_url)
+            print(f"  ✓ Created client for workspace {ws_id} ({ws_url})")
+        except Exception as e:
+            print(f"  ✗ Failed to create client for {ws_id}: {e}, using default")
+            workspace_clients[ws_id] = WorkspaceClient()
+    else:
+        print(f"  → Using default client for workspace {ws_id} ({ws_url})")
+        workspace_clients[ws_id] = WorkspaceClient()
 
 # COMMAND ----------
 
@@ -127,10 +225,6 @@ from databricks.sdk import WorkspaceClient
 from typing import List, Dict, Any, Tuple, Optional
 import json
 import requests
-
-# Initialize workspace client
-client = WorkspaceClient()
-print("✓ Workspace client initialized")
 
 # COMMAND ----------
 
@@ -582,6 +676,40 @@ def fetch_token_acls(client: WorkspaceClient, workspace_id: str) -> Dict[str, An
         return {}, error_msg
     
     return discovered, None
+
+
+def sql_executor(client: WorkspaceClient, workspace_id: str, sql_query: str) -> List[Dict[str, Any]]:
+    """Execute a SQL query and return the results."""
+    warehouse_id = spark.sql(f"""select warehouse_id 
+                                from {catalog}.{schema}.governance_config_workspaces 
+                                where workspace_id = '{workspace_id}'""").collect()[0][0]
+    results = client.statement_execute.execute_statement(
+        warehouse_id=warehouse_id,
+        statement=sql_query
+    )
+    data = []
+    columns = sorted(results.manifest.schema.columns, key=lambda x: x.position)
+    rows = results.result.data_array
+    for row in rows:
+        row_data = {}
+        for i, column in enumerate(columns):
+            row_data[column.name] = row[i]
+        data.append(row_data)
+    return data
+
+def fetch_any_file_permissions(client: WorkspaceClient, workspace_id: str) -> List[Dict[str, Any]]:
+    """Discover all files in the workspace."""
+    data = {'grants': []}
+    print(f"Discovering ANY_FILES...")
+    try:
+        sql_query = "show grants on any file"
+        data['grants'] = sql_executor(client, workspace_id, sql_query)
+        
+    except Exception as e:
+        print(f"✗ Error discovering ANY_FILES: {str(e)}")
+        return {}, f"Error discovering ANY_FILES: {str(e)}"
+    
+    return data, None
 
 # COMMAND ----------
 
@@ -1057,7 +1185,7 @@ if sync_creations and resource_ids_str:
                     user_email = row.user_email
                     
                     # Fetch current permissions for this object
-                    permissions, perm_error = fetch_current_permissions(client, object_type, object_id)
+                    permissions, perm_error = fetch_current_permissions(workspace_clients[workspace_id], object_type, object_id)
                     if perm_error:
                         print(f"  ⚠️  {object_type}:{object_id} - {perm_error}")
                     
@@ -1218,7 +1346,7 @@ if sync_permissions and permission_ids_str:
                 print(f"\n  Processing: {object_type}:{object_id}")
                 
                 # Fetch current permissions from Databricks APIs
-                current_permissions, fetch_error = fetch_current_permissions(client, object_type, object_id)
+                current_permissions, fetch_error = fetch_current_permissions(workspace_clients[workspace_id], object_type, object_id)
                 
                 if current_permissions:
                     print(f"    → Fetched {len(current_permissions)} permission entries")
@@ -1477,16 +1605,17 @@ if sync_entitlements and permission_ids_str and entitlement_filters:
                 print(f"\n  Processing identity type: {object_type} id: {object_id}")
                 
                 if object_type == 'groups':
-                    object_name, metadata, fetch_error = fetch_group_details(client, object_id)
+                    object_name, metadata, fetch_error = fetch_group_details(workspace_clients[workspace_id], object_id)
                 elif object_type == 'users':
-                    object_name, metadata, fetch_error = fetch_user_details(client, object_id)
+                    object_name, metadata, fetch_error = fetch_user_details(workspace_clients[workspace_id], object_id)
                 elif object_type == 'service_principal':
-                    object_name, metadata, fetch_error = fetch_service_principal_details(client, object_id)
+                    object_name, metadata, fetch_error = fetch_service_principal_details(workspace_clients[workspace_id], object_id)
                 elif object_type == 'tokensAcls':
-                    metadata = None
-                    object_def, fetch_error = fetch_token_acls(client, workspace_id)
+                    metadata, fetch_error = fetch_token_acls(workspace_clients[workspace_id], workspace_id)
+                elif object_type == 'any_file_permissions':
+                    metadata, fetch_error = fetch_any_file_permissions(workspace_clients[workspace_id], workspace_id)
                 else:
-                    object_type, (object_name, metadata, fetch_error) = resolve_identity_details(client, object_id)
+                    object_type, (object_name, metadata, fetch_error) = resolve_identity_details(workspace_clients[workspace_id], object_id)
                 
                 if metadata:
                     updated_records.append({

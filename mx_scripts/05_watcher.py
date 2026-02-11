@@ -29,6 +29,7 @@
 #dbutils.widgets.text("catalog", "qadl", "Catalog Name")
 #dbutils.widgets.text("schema", "sch_mng_admon", "Schema Name")
 #dbutils.widgets.text("lookback_hours", "168", "Lookback Hours for Audit Logs")
+dbutils.widgets.dropdown("auth_type","azure-client-secret",["pat","azure-client-secret"],"Auth Type")
 
 # COMMAND ----------
 
@@ -52,14 +53,38 @@ import json
 
 workspaceId = get_context().workspaceId
 
+try:
+    auth_type = dbutils.widgets.get("auth_type")
+except Exception as e:
+    auth_type = "azure-client-secret"
+
 if workspaceId == "4126527463676543":
     catalog = "qadl"
+    if auth_type == "azure-client-secret":
+        kv_scope = "azueskvsadl01"
+        kv_client_id_key = "b8a66bbe-9d97-4f64-bd3d-9e4768835700"
+        kv_client_secret_key = 'serviceprincipal-SPDBPROD'
+        kv_tenant_id_key = 'ApiRestTenant'
+    elif auth_type == "pat":
+        kv_scope = "azueskvsadl01"
+        kv_client_secret_key = "add-secret-id-token-databricks"
+        kv_client_secret_key2 = "add-secret-id-token-databricks2"
 else:
     catalog = "dlprod"
+    if auth_type == "azure-client-secret":
+        kv_scope = "TBD" #"esazukvspdl01"
+        kv_client_id_key = "TDB" #"7cdf5dcf-54d6-4a1c-ba10-7fd308054e87"
+        kv_client_secret_key = "TBD" #"serviceprincipal-SPDBPROD"
+        kv_tenant_id_key = "TBD" #"ApiRestTenant"
+    elif auth_type == "pat":
+        kv_scope = "esazukvspcso01"
+        kv_client_secret_key = "WADatabricks"
+        kv_client_secret_key2 = "WADatabricks2"
 
 schema = "sch_mng_admon"
 
 print(f"Catalog: {catalog}")
+print(f"Auth type: {auth_type}")
 
 # COMMAND ----------
 
@@ -123,13 +148,42 @@ import uuid
 from databricks.sdk import WorkspaceClient
 from typing import List, Dict, Any, Tuple
 
-# Initialize workspace client for group expansion
-client = WorkspaceClient()
+def create_workspace_client(workspace_url: str) -> WorkspaceClient:
+    """Create a WorkspaceClient with Azure authentication using Key Vault secrets."""    
+    if kv_scope and auth_type == "azure-client-secret":
+        # Get credentials from Key Vault
+        azure_client_id = kv_client_id_key #dbutils.secrets.get(scope=kv_scope, key=kv_client_id_key)
+        client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
+        tenant_id = dbutils.secrets.get(scope=kv_scope, key=kv_tenant_id_key)
+
+        return WorkspaceClient(
+            host=workspace_url,
+            azure_client_id=azure_client_id,
+            azure_client_secret=client_secret,
+            azure_tenant_id=tenant_id,
+            auth_type="azure-client-secret"
+        )
+    elif kv_scope and auth_type == "pat":
+        if "4126527463676543" in workspace_url or "4782182804791024" in workspace_url:
+            client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
+        else:
+            client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key2)
+
+        return WorkspaceClient(
+            host=workspace_url,
+            token = client_secret,
+            auth_type="pat"
+        )
+    else:
+        return WorkspaceClient()
+
+# COMMAND ----------
 
 # Load enabled workspaces first to use as filter
 enabled_workspaces_df = spark.sql(f"""
     SELECT 
         workspace_id,
+        workspace_url,
         workspace_name,
         enabled_object_types,
         max_retry_attempts
@@ -138,6 +192,8 @@ enabled_workspaces_df = spark.sql(f"""
 """)
 
 enabled_workspace_ids = [row.workspace_id for row in enabled_workspaces_df.collect()]
+workspace_urls = [row.workspace_url for row in enabled_workspaces_df.collect()]
+workspace_ids = [row.workspace_id for row in enabled_workspaces_df.collect()]
 print(f"Governance enabled for {len(enabled_workspace_ids)} workspace(s)")
 
 if not enabled_workspace_ids:
@@ -147,6 +203,21 @@ if not enabled_workspace_ids:
 # Build the workspace IDs string for SQL IN clause
 workspace_ids_str = "', '".join([str(wid) for wid in enabled_workspace_ids])
 print(f"Workspace Ids: {workspace_ids_str}")
+
+# Create workspace clients for each workspace with violations
+workspace_clients = {}
+for ws_id, ws_url in zip(workspace_ids, workspace_urls):
+    # Check if we have Key Vault scope configured and workspace URL
+    if kv_scope and ws_url:
+        try:
+            workspace_clients[ws_id] = create_workspace_client(ws_url)
+            print(f"  ✓ Created client for workspace {ws_id} ({ws_url})")
+        except Exception as e:
+            print(f"  ✗ Failed to create client for {ws_id}: {e}, using default")
+            workspace_clients[ws_id] = WorkspaceClient()
+    else:
+        print(f"  → Using default client for workspace {ws_id} ({ws_url})")
+        workspace_clients[ws_id] = WorkspaceClient()
 
 # COMMAND ----------
 
@@ -352,10 +423,10 @@ def expand_group_members(group_names: List[str], client, identity_approved_actio
     return list(set(expanded_users)), list(set(expanded_sps))
 
 # Expand groups for resource management (also updates identity_approved_actions)
-resource_expanded_users, resource_expanded_sps = expand_group_members(resource_approved_groups, client, identity_approved_actions)
+resource_expanded_users, resource_expanded_sps = expand_group_members(resource_approved_groups, workspace_clients[workspaceId], identity_approved_actions)
 
 # Expand groups for permission management (also updates identity_approved_actions)
-permission_expanded_users, permission_expanded_sps = expand_group_members(permission_approved_groups, client, identity_approved_actions)
+permission_expanded_users, permission_expanded_sps = expand_group_members(permission_approved_groups, workspace_clients[workspaceId], identity_approved_actions)
 
 print(f"\nExpanded from groups for RESOURCE management:")
 print(f"  - Users: {len(resource_expanded_users)}")
@@ -855,7 +926,7 @@ if entitlement_query:
                 (col("object_name") == "unknown")
             )
         )
-        .select("object_id")
+        .select("object_id", "workspace_id")
         .distinct()
         .collect()
     )
@@ -863,7 +934,7 @@ if entitlement_query:
     if missing_identity_ids:
         resolved_rows = []
         for row in missing_identity_ids:
-            resolved_type, resolved_name = _resolve_identity_by_id(client, row.object_id)
+            resolved_type, resolved_name = _resolve_identity_by_id(workspace_clients[row.workspace_id], row.object_id)
             if resolved_type or resolved_name:
                 resolved_rows.append((row.object_id, resolved_type, resolved_name))
         
@@ -1109,7 +1180,7 @@ if all_violation_events_df and total_events_count > 0:
     
     personal_objects = []
     for row in candidate_rows:
-        is_personal = _is_personal_workspace(_resolve_workspace_path(client, row.object_type, row.object_id))
+        is_personal = _is_personal_workspace(_resolve_workspace_path(workspace_clients[row.workspace_id], row.object_type, row.object_id))
         if is_personal:
             personal_objects.append((row.object_id))
     

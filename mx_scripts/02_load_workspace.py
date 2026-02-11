@@ -71,7 +71,8 @@ if workspaceId == "4126527463676543":
             'notification_slack_webhook': None,  # Optional: add Slack webhook URL
             'enabled_object_types': ['notebook', 'query', 'dashboard', 'cluster', 'pipeline', 'directories'], #Not used now
             'max_retry_attempts': 3,
-            'created_by': 's12466@mx.att.com'
+            'created_by': 's12466@mx.att.com',
+            'warehouse_id': None
         }
     ]
 else:
@@ -85,7 +86,8 @@ else:
             'notification_slack_webhook': None,  # Optional: add Slack webhook URL
             'enabled_object_types': ['notebook', 'query', 'dashboard', 'job', 'cluster', 'pipeline', 'directories'],
             'max_retry_attempts': 3,
-            'created_by': 's12466@mx.att.com'
+            'created_by': 's12466@mx.att.com',
+            'warehouse_id': None
         },
         {
             'workspace_id': '2535844015940567',
@@ -96,7 +98,8 @@ else:
             'notification_slack_webhook': None,  # Optional: add Slack webhook URL
             'enabled_object_types': ['notebook', 'query', 'dashboard', 'job', 'cluster', 'pipeline', 'directories'],
             'max_retry_attempts': 3,
-            'created_by': 's12466@mx.att.com'
+            'created_by': 's12466@mx.att.com',
+            'warehouse_id': None
         }
     ]
 
@@ -134,7 +137,8 @@ def prepare_workspace_records(configs: List[Dict[str, Any]]) -> List[Dict[str, A
             'max_retry_attempts': config.get('max_retry_attempts', 3),
             'created_at': current_time,
             'updated_at': current_time,
-            'created_by': config.get('created_by', 'admin')
+            'created_by': config.get('created_by', 'admin'),
+            'warehouse_id': config.get('warehouse_id', None)
         })
     
     return records
@@ -162,7 +166,8 @@ if workspace_records:
         StructField('max_retry_attempts', IntegerType(), True),
         StructField('created_at', TimestampType(), True),
         StructField('updated_at', TimestampType(), True),
-        StructField('created_by', StringType(), True)
+        StructField('created_by', StringType(), True),
+        StructField('warehouse_id', StringType(), True)
     ])
     
     # Create DataFrame with explicit schema
@@ -186,7 +191,8 @@ if workspace_records:
                 notification_slack_webhook = source.notification_slack_webhook,
                 enabled_object_types = source.enabled_object_types,
                 max_retry_attempts = source.max_retry_attempts,
-                updated_at = source.updated_at
+                updated_at = source.updated_at,
+                warehouse_id = source.warehouse_id
         WHEN NOT MATCHED THEN INSERT *
     """)
     
@@ -220,6 +226,7 @@ all_workspaces_df = spark.sql(f"""
         workspace_id,
         workspace_name,
         workspace_url,
+        warehouse_id,
         enforcement_enabled,
         notification_email,
         enabled_object_types,

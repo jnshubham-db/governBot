@@ -82,7 +82,7 @@ print(f"Timezone: {tz}")
 #                           "vectorSearchEndpoints", "vectorIndexes", "catalogs", "schemas", "tables", "volumes", 
 #                           "functions", "connections", "externalLocations", "storageCredentials", "shares", 
 #                           "recipients", "providers", "cleanRooms", "metastores", "genieSpaces", 
-#                           "ucRegisteredModels", "featureTables", "groups", "tokensAcls", "users", "servicePrincipals"],
+#                           "ucRegisteredModels", "featureTables", "groups", "tokensAcls", "users", "servicePrincipals", "anyFiles"],
 #                          "Object Types to Discover")
 #dbutils.widgets.dropdown("use_selective_filter", "Y", ["Y", "N"], "Use Selective Filtering")
 #dbutils.widgets.text("max_threads", "10", "Max Threads for Workspace Discovery")
@@ -109,7 +109,7 @@ except:
     elif workspace_id == "2535844015940567":
         workspace_url = "https://adb-2535844015940567.7.azuredatabricks.net/"
 
-all_objects = "workspace_objects,query,dashboard,jobs,cluster,pipelines,apps,mlflowExperiments,monitors,alerts,alertsv2,warehouses,clusterPolicies,instancePools,servingEndpoints,registeredModels,secretScopes,vectorSearchEndpoints,vectorIndexes,catalogs,schemas,tables,volumes,functions,connections,externalLocations,storageCredentials,shares,recipients,providers,cleanRooms,metastores,genieSpaces,ucRegisteredModels,featureTables,groups,tokensAcls,users,servicePrincipals"
+all_objects = "workspace_objects,query,dashboard,jobs,cluster,pipelines,apps,mlflowExperiments,monitors,alerts,alertsv2,warehouses,clusterPolicies,instancePools,servingEndpoints,registeredModels,secretScopes,vectorSearchEndpoints,vectorIndexes,catalogs,schemas,tables,volumes,functions,connections,externalLocations,storageCredentials,shares,recipients,providers,cleanRooms,metastores,genieSpaces,ucRegisteredModels,featureTables,groups,tokensAcls,users,servicePrincipals,anyFiles"
 
 try:
     object_types_str = dbutils.widgets.get("object_types")
@@ -239,6 +239,26 @@ def create_account_client(account_url: str, account_id: str) -> AccountClient:
         )
     else:
         return AccountClient()
+
+def sql_executor(client: WorkspaceClient, workspace_id: str, sql_query: str) -> List[Dict[str, Any]]:
+    """Execute a SQL query and return the results."""
+    warehouse_id = spark.sql(f"""select warehouse_id 
+                                from {catalog}.{schema}.governance_config_workspaces 
+                                where workspace_id = '{workspace_id}'""").collect()[0][0]
+    print(f"Warehouse ID: {warehouse_id}")
+    results = client.statement_execute.execute_statement(
+        warehouse_id=warehouse_id,
+        statement=sql_query
+    )
+    data = []
+    columns = sorted(results.manifest.schema.columns, key=lambda x: x.position)
+    rows = results.result.data_array
+    for row in rows:
+        row_data = {}
+        for i, column in enumerate(columns):
+            row_data[column.name] = row[i]
+        data.append(row_data)
+    return data
 
 # COMMAND ----------
 
@@ -3061,6 +3081,33 @@ def discover_tokens_acls(client: WorkspaceClient, workspace_id: str) -> List[Dic
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Any files in the workspace
+
+# COMMAND ----------
+def discover_any_files_securables(client: WorkspaceClient, workspace_id: str) -> List[Dict[str, Any]]:
+    """Discover all files in the workspace."""
+    discovered = []
+    print(f"Discovering ANY_FILES...")
+    try:
+        sql_query = "show grants on any file"
+        data = sql_executor(client, workspace_id, sql_query)
+        discovered.append({
+            'object_id': f'{workspace_id}/any_files',
+            'workspace_id': workspace_id,
+            'object_type': 'any_file_permissions',
+            'object_name': f'{workspace_id}/any_files',
+            'metadata': {'grants': json.dumps(data)},
+            'is_active': True,
+            'created_at': datetime.now(tz),
+            'updated_at': datetime.now(tz)})
+    except Exception as e:
+        print(f"✗ Error discovering ANY_FILES: {str(e)}")
+    
+    return discovered
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Run Discovery
 
 # COMMAND ----------
@@ -3115,6 +3162,7 @@ discovery_functions = {
     'tokensAcls': discover_tokens_acls,
     'users': discover_users,
     'servicePrincipals': discover_service_principals,
+    'anyFiles': discover_any_files_securables,
 }
 
 all_discovered = []

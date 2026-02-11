@@ -73,7 +73,7 @@ print(f"Load Approved identities: {load_approved_id}")
 # COMMAND ----------
 
 from dbruntime.databricks_repl_context import get_context
-from databricks.sdk.errors import InvalidParameterValue
+from databricks.sdk.errors import InvalidParameterValue, ResourceDoesNotExist
 from datetime import datetime
 import json
 import pytz
@@ -271,7 +271,7 @@ retryable_violations_df = spark.sql(f"""
         ca.created_at as created_at
     FROM {staging_table} v
     INNER JOIN {control_actions_table} ca ON v.violation_id = ca.violation_id
-    WHERE ca.remediation_status <> 'SUCCESS' AND ca.retry_count <= ca.max_retries
+    WHERE ca.remediation_status not in ('SUCCESS', 'SKIPPED') AND ca.retry_count <= ca.max_retries
 """)
 
 pending_violations_df = retryable_violations_df.union(new_violations_df)
@@ -843,187 +843,182 @@ def get_resource_definition(client, object_type: str, object_id: str) -> Optiona
     Get resource definition as JSON string for backup.
     Returns None if backup is not supported or fails.
     """
-    try:
-        definition = None
-        
-        if object_type in ['jobs', 'job']:
-            job = client.jobs.get(job_id=int(object_id))
-            if hasattr(job, 'settings'):
-                definition = job.settings.as_dict()
-            else:
-                definition = job.as_dict()
-                
-        elif object_type in ['pipelines', 'pipeline']:
-            pipeline = client.pipelines.get(pipeline_id=object_id)
-            if hasattr(pipeline, 'spec'):
-                definition = pipeline.spec.as_dict()
-            else:
-                definition = pipeline.as_dict()
-                
-        elif object_type == 'apps':
-            app = client.apps.get(name=object_id)
-            definition = app.as_dict()
-             
-        elif object_type == 'mlflowExperiments':
-            exp = client.experiments.get_experiment(experiment_id=object_id)
-            definition = exp.as_dict()
+    definition = None
+    
+    if object_type in ['jobs', 'job']:
+        job = client.jobs.get(job_id=int(object_id))
+        if hasattr(job, 'settings'):
+            definition = job.settings.as_dict()
+        else:
+            definition = job.as_dict()
+            
+    elif object_type in ['pipelines', 'pipeline']:
+        pipeline = client.pipelines.get(pipeline_id=object_id)
+        if hasattr(pipeline, 'spec'):
+            definition = pipeline.spec.as_dict()
+        else:
+            definition = pipeline.as_dict()
+            
+    elif object_type == 'apps':
+        app = client.apps.get(name=object_id)
+        definition = app.as_dict()
+            
+    elif object_type == 'mlflowExperiments':
+        exp = client.experiments.get_experiment(experiment_id=object_id)
+        definition = exp.as_dict()
 
-        elif object_type == 'monitors':
-            # Use quality_monitors API (the correct SDK attribute name)
-            if hasattr(client, 'quality_monitors'):
-                monitor = client.quality_monitors.get(table_name=object_id)
-                definition = monitor.as_dict()
-            else:
-                definition = {'table_name': object_id, 'note': 'Lakehouse Monitoring API not available for full backup'}
-            
-        elif object_type == 'cluster':
-            cluster = client.clusters.get(cluster_id=object_id)
-            definition = cluster.as_dict()
-            
-        elif object_type == 'alert':
-            alert = client.alerts.get(id=object_id)
-            definition = alert.as_dict()
-            
-        elif object_type == 'alertsv2':
-            alert = client.alerts_v2.get_alert(id=object_id)
-            definition = alert.as_dict()
-            
-        elif object_type == 'warehouse':
-            warehouse = client.warehouses.get(id=object_id)
-            definition = warehouse.as_dict()
-            
-        elif object_type == 'clusterPolicy':
-            policy = client.cluster_policies.get(policy_id=object_id)
-            definition = policy.as_dict()
-            
-        elif object_type == 'instancePool':
-            pool = client.instance_pools.get(instance_pool_id=object_id)
-            definition = pool.as_dict()
-            
-        elif object_type == 'servingEndpoint':
-            endpoint = client.serving_endpoints.get(name=object_id)
-            definition = endpoint.as_dict()
-            
-        elif object_type == 'secretScope':
-            # Secret scopes don't have much config to backup
-            definition = {'scope_name': object_id}
-            
-        elif object_type == 'vectorSearchEndpoint':
-            endpoint = client.vector_search_endpoints.get_endpoint(endpoint_name=object_id)
-            definition = endpoint.as_dict()
-            
-        elif object_type in ['registeredModel', 'ucRegisteredModel']:
-            model = client.registered_models.get(full_name=object_id)
-            definition = model.as_dict()
-            
-        elif object_type == 'dashboard':
-            # Try Lakeview dashboard first, then legacy
-            try:
-                if hasattr(client, 'lakeview'):
-                    dashboard = client.lakeview.get(dashboard_id=object_id)
-                    definition = dashboard.as_dict()
-                else:
-                    dashboard = client.dashboards.get(dashboard_id=object_id)
-                    definition = dashboard.as_dict()
-            except Exception:
-                # Fallback to legacy SQL dashboard API
-                dashboard = client.dashboards.get(dashboard_id=object_id)
-                definition = dashboard.as_dict()
+    elif object_type == 'monitors':
+        # Use quality_monitors API (the correct SDK attribute name)
+        if hasattr(client, 'quality_monitors'):
+            monitor = client.quality_monitors.get(table_name=object_id)
+            definition = monitor.as_dict()
+        else:
+            definition = {'table_name': object_id, 'note': 'Lakehouse Monitoring API not available for full backup'}
         
-        elif object_type == 'lakeview_dashboard':
+    elif object_type == 'cluster':
+        cluster = client.clusters.get(cluster_id=object_id)
+        definition = cluster.as_dict()
+        
+    elif object_type == 'alert':
+        alert = client.alerts.get(id=object_id)
+        definition = alert.as_dict()
+        
+    elif object_type == 'alertsv2':
+        alert = client.alerts_v2.get_alert(id=object_id)
+        definition = alert.as_dict()
+        
+    elif object_type == 'warehouse':
+        warehouse = client.warehouses.get(id=object_id)
+        definition = warehouse.as_dict()
+        
+    elif object_type == 'clusterPolicy':
+        policy = client.cluster_policies.get(policy_id=object_id)
+        definition = policy.as_dict()
+        
+    elif object_type == 'instancePool':
+        pool = client.instance_pools.get(instance_pool_id=object_id)
+        definition = pool.as_dict()
+        
+    elif object_type == 'servingEndpoint':
+        endpoint = client.serving_endpoints.get(name=object_id)
+        definition = endpoint.as_dict()
+        
+    elif object_type == 'secretScope':
+        # Secret scopes don't have much config to backup
+        definition = {'scope_name': object_id}
+        
+    elif object_type == 'vectorSearchEndpoint':
+        endpoint = client.vector_search_endpoints.get_endpoint(endpoint_name=object_id)
+        definition = endpoint.as_dict()
+        
+    elif object_type in ['registeredModel', 'ucRegisteredModel']:
+        model = client.registered_models.get(full_name=object_id)
+        definition = model.as_dict()
+        
+    elif object_type == 'dashboard':
+        # Try Lakeview dashboard first, then legacy
+        try:
             if hasattr(client, 'lakeview'):
                 dashboard = client.lakeview.get(dashboard_id=object_id)
                 definition = dashboard.as_dict()
             else:
-                definition = {'dashboard_id': object_id, 'note': 'Lakeview API not available for full backup'}
-            
-        elif object_type == 'query':
-            query = client.queries.get(id=object_id)
-            definition = query.as_dict()
-            
-        elif object_type == 'catalog':
-            catalog = client.catalogs.get(name=object_id)
-            definition = catalog.as_dict()
-            
-        elif object_type == 'schema':
-            schema = client.schemas.get(full_name=object_id)
-            definition = schema.as_dict()
-            
-        elif object_type == 'table':
-            table = client.tables.get(full_name=object_id)
-            definition = table.as_dict()
-            
-        elif object_type == 'volume':
-            volume = client.volumes.read(name=object_id)
-            definition = volume.as_dict()
-            
-        elif object_type == 'connection':
-            connection = client.connections.get(name=object_id)
-            definition = connection.as_dict()
-            
-        elif object_type == 'function':
-            function = client.functions.get(name=object_id)
-            definition = function.as_dict()
-            
-        elif object_type == 'externalLocation':
-            ext_loc = client.external_locations.get(name=object_id)
-            definition = ext_loc.as_dict()
-            
-        elif object_type == 'storageCredential':
-            cred = client.storage_credentials.get(name=object_id)
-            definition = cred.as_dict()
-            
-        elif object_type == 'share':
-            share = client.shares.get(name=object_id)
-            definition = share.as_dict()
-            
-        elif object_type == 'recipient':
-            recipient = client.recipients.get(name=object_id)
-            definition = recipient.as_dict()
-            
-        elif object_type == 'provider':
-            provider = client.providers.get(name=object_id)
-            definition = provider.as_dict()
-            
-        elif object_type == 'cleanRoom':
-            clean_room = client.clean_rooms.get(name=object_id)
-            definition = clean_room.as_dict()
-            
-        elif object_type == 'metastore':
-            metastore = client.metastores.get(id=object_id)
-            definition = metastore.as_dict()
-            
-        elif object_type == 'featureTable':
-            # Feature tables don't have a direct get API, minimal backup
-            definition = {'feature_table_name': object_id}
-            
-        elif object_type == 'genieSpace':
-            # Genie space backup - minimal info
-            definition = {'space_id': object_id}
+                dashboard = client.dashboards.get(dashboard_id=object_id)
+                definition = dashboard.as_dict()
+        except Exception:
+            # Fallback to legacy SQL dashboard API
+            dashboard = client.dashboards.get(dashboard_id=object_id)
+            definition = dashboard.as_dict()
+    
+    elif object_type == 'lakeview_dashboard':
+        if hasattr(client, 'lakeview'):
+            dashboard = client.lakeview.get(dashboard_id=object_id)
+            definition = dashboard.as_dict()
+        else:
+            definition = {'dashboard_id': object_id, 'note': 'Lakeview API not available for full backup'}
         
-        elif object_type == 'vectorIndex':
-            # Vector index backup - minimal info
-            definition = {'index_name': object_id}
+    elif object_type == 'query':
+        query = client.queries.get(id=object_id)
+        definition = query.as_dict()
         
-        elif object_type == 'abacPolicy':
-            # ABAC policy backup - minimal info
-            definition = {'policy_name': object_id}
+    elif object_type == 'catalog':
+        catalog = client.catalogs.get(name=object_id)
+        definition = catalog.as_dict()
         
-        elif object_type == 'featureSpec':
-            # Feature spec backup - minimal info
-            definition = {'feature_spec_name': object_id}
+    elif object_type == 'schema':
+        schema = client.schemas.get(full_name=object_id)
+        definition = schema.as_dict()
         
-        elif object_type in ['databaseInstance', 'databaseCatalog', 'databaseTable']:
-            # Lakebase objects - minimal info
-            definition = {'object_name': object_id, 'object_type': object_type}
+    elif object_type == 'table':
+        table = client.tables.get(full_name=object_id)
+        definition = table.as_dict()
         
-        if definition:
-            return json.dumps(definition)
-        return None
+    elif object_type == 'volume':
+        volume = client.volumes.read(name=object_id)
+        definition = volume.as_dict()
         
-    except Exception as e:
-        print(f"  Warning: Failed to backup {object_type} {object_id}: {str(e)}")
-        return None
+    elif object_type == 'connection':
+        connection = client.connections.get(name=object_id)
+        definition = connection.as_dict()
+        
+    elif object_type == 'function':
+        function = client.functions.get(name=object_id)
+        definition = function.as_dict()
+        
+    elif object_type == 'externalLocation':
+        ext_loc = client.external_locations.get(name=object_id)
+        definition = ext_loc.as_dict()
+        
+    elif object_type == 'storageCredential':
+        cred = client.storage_credentials.get(name=object_id)
+        definition = cred.as_dict()
+        
+    elif object_type == 'share':
+        share = client.shares.get(name=object_id)
+        definition = share.as_dict()
+        
+    elif object_type == 'recipient':
+        recipient = client.recipients.get(name=object_id)
+        definition = recipient.as_dict()
+        
+    elif object_type == 'provider':
+        provider = client.providers.get(name=object_id)
+        definition = provider.as_dict()
+        
+    elif object_type == 'cleanRoom':
+        clean_room = client.clean_rooms.get(name=object_id)
+        definition = clean_room.as_dict()
+        
+    elif object_type == 'metastore':
+        metastore = client.metastores.get(id=object_id)
+        definition = metastore.as_dict()
+        
+    elif object_type == 'featureTable':
+        # Feature tables don't have a direct get API, minimal backup
+        definition = {'feature_table_name': object_id}
+        
+    elif object_type == 'genieSpace':
+        # Genie space backup - minimal info
+        definition = {'space_id': object_id}
+    
+    elif object_type == 'vectorIndex':
+        # Vector index backup - minimal info
+        definition = {'index_name': object_id}
+    
+    elif object_type == 'abacPolicy':
+        # ABAC policy backup - minimal info
+        definition = {'policy_name': object_id}
+    
+    elif object_type == 'featureSpec':
+        # Feature spec backup - minimal info
+        definition = {'feature_spec_name': object_id}
+    
+    elif object_type in ['databaseInstance', 'databaseCatalog', 'databaseTable']:
+        # Lakebase objects - minimal info
+        definition = {'object_name': object_id, 'object_type': object_type}
+    
+    if definition:
+        return json.dumps(definition)
+    return None
 
 # COMMAND ----------
 
@@ -1432,13 +1427,57 @@ def _build_access_control_request(principal: str, permission_level: str, princip
 
 # COMMAND ----------
 
-def execute_remediation(client, violation: dict, dry_run: bool = False) -> Tuple[str, str, Optional[str], Optional[str]]:
+def revert_entitlement_change(client, workspace_id: str, warehouse_id: str, object_name: str, object_type: str, action_name: str) -> Tuple[bool, Optional[str]]:
+    """
+    Revert entitlement change for a given object.
+    """
+    try:
+        if object_type == 'any_file_permissions':
+            return _revert_any_file_grant_change(client, warehouse_id, object_name, object_type, action_name)
+        else:
+            return (False, f"Unsupported object type: {object_type}")
+    except Exception as e:
+        return (False, f"Failed to revert entitlement change for {object_type}:{object_name}: {e}")
+
+
+def _revert_any_file_grant_change(client, warehouse_id: str, object_name: str, object_type: str, action_name: str) -> Tuple[bool, Optional[str]]:
+    """
+    Revert any file grant change for a given object.
+    """
+    try:
+        permission = json.loads(object_name)
+        securable_name = permission['securable']['name'].strip('/ ').replace('_', ' ')
+        principal_name = permission['principal']['name']
+        grant_name = permission['action']['name']
+        if action_name == 'grantPermission':
+            statement = f"REVOKE {grant_name} ON {securable_name} FROM `{principal_name}`"
+            client.statement_execution.execute_statement(
+                warehouse_id=warehouse_id,
+                statement=statement,
+            )
+            return (True, f"Reverted any file grant change for {object_type}: {statement}")
+        elif action_name == 'revokePermission':
+            statement = f"GRANT {grant_name} ON {securable_name} TO `{principal_name}`"
+            client.statement_execution.execute_statement(
+                warehouse_id=warehouse_id,
+                statement=statement,
+            )
+            return (True, f"Reverted any file revoke change for {object_type}: {statement}")
+        else:
+            return (False, f"Unsupported action name: {action_name} for {object_type}")
+    except Exception as e:
+        return (False, f"Failed to revert entitlement change for {object_type}: {e}")
+
+# COMMAND ----------
+
+def execute_remediation(client, warehouse_id: str, violation: dict, dry_run: bool = False) -> Tuple[str, str, Optional[str], Optional[str]]:
     """Execute remediation action for a violation."""
     remediation_action = violation['remediation_action']
     object_type = violation['object_type']
     object_id = violation['object_id']
     object_name = violation['object_name']
     workspace_id = violation['workspace_id']
+    action_name = violation['action_name']
     
     backup_definition = None
     
@@ -1456,7 +1495,13 @@ def execute_remediation(client, violation: dict, dry_run: bool = False) -> Tuple
         if remediation_action == 'DELETE_RESOURCE':
             # Step 1: Backup the resource definition
             print(f"  → Attempting to backup definition for {object_type}:{object_id}")
-            backup_definition = get_resource_definition(client, object_type, object_id)
+            try:
+                backup_definition = get_resource_definition(client, object_type, object_id)
+            except ResourceDoesNotExist as e:
+                error = f"Resource does not exist: {object_type}:{object_id}"
+                return ('SKIPPED', f"Skipped: {error}", error, None)
+            except Exception as e:
+                backup_definition = None
             
             if not backup_definition:
                 # Backup failed or not supported. 
@@ -1530,6 +1575,18 @@ def execute_remediation(client, violation: dict, dry_run: bool = False) -> Tuple
             error = None
             details = f"Deletion reported for security team review: {object_type} '{object_name}' (ID: {object_id}) deleted by {violation.get('user_email', 'Unknown')}"
             print(f"✓ {details}")
+
+        elif remediation_action == 'REVERT_ENTITLEMENT_CHANGE':
+            # Revert entitlement change to pre-approved state if found in governance table,
+            # otherwise remove all explicit permissions
+            print(f"Reverting entitlement change for {object_type} (ID: {object_id})")
+            success, error = revert_entitlement_change(
+                client, 
+                workspace_id, 
+                warehouse_id, 
+                object_name,
+                object_type,
+                action_name)
         
         else:
             success, error = False, f"Unknown remediation action: {remediation_action}"
@@ -1559,6 +1616,7 @@ workspace_configs = {}
 ws_config_df = spark.sql(f"""
     SELECT 
         workspace_id, 
+        warehouse_id,
         workspace_url,
         max_retry_attempts
     FROM {catalog}.{schema}.governance_config_workspaces
@@ -1575,22 +1633,31 @@ violation_workspace_ids = set(row.workspace_id for row in pending_violations_df.
 print(f"Violations span {len(violation_workspace_ids)} workspace(s): {violation_workspace_ids}")
 
 # Create workspace clients for each workspace with violations
-workspace_clients = {}
+workspace_objects = {}
 for ws_id in violation_workspace_ids:
     config = workspace_configs.get(ws_id, {})
     workspace_url = config.get('workspace_url')
-    
+    warehouse_id = config.get('warehouse_id')
     # Check if we have Key Vault scope configured and workspace URL
     if kv_scope and workspace_url:
         try:
-            workspace_clients[ws_id] = create_workspace_client(workspace_url)
+            workspace_objects[ws_id] = {
+                'client': create_workspace_client(workspace_url),
+                'warehouse_id': warehouse_id
+            }
             print(f"  ✓ Created client for workspace {ws_id} ({workspace_url})")
         except Exception as e:
             print(f"  ✗ Failed to create client for {ws_id}: {e}, using default")
-            workspace_clients[ws_id] = WorkspaceClient()
+            workspace_objects[ws_id] = {
+                'client': WorkspaceClient(),
+                'warehouse_id': warehouse_id
+            }
     else:
         print(f"  → Using default client for workspace {ws_id}")
-        workspace_clients[ws_id] = WorkspaceClient()
+        workspace_objects[ws_id] = {
+            'client': WorkspaceClient(),
+            'warehouse_id': warehouse_id
+        }
 
 # COMMAND ----------
 
@@ -1614,12 +1681,14 @@ for violation_row in violations_list:
     created_at = violation['created_at']
     
     # Get the pre-created client for this workspace
-    client = workspace_clients.get(workspace_id, WorkspaceClient())
+    workspace_object = workspace_objects.get(workspace_id, {'client': WorkspaceClient(), 'warehouse_id': None})
+    client = workspace_object['client']
+    warehouse_id = workspace_object['warehouse_id']
     
     print(f"\nProcessing: {violation['object_type']}:{violation['object_id']} (workspace: {workspace_id})")
     
     # Execute remediation
-    status, details, error, backup_definition = execute_remediation(client, violation, dry_run)
+    status, details, error, backup_definition = execute_remediation(client, warehouse_id, violation, dry_run)
     
     # Get max retries from config
     max_retries = workspace_configs.get(workspace_id, {}).get('max_retry_attempts', 3)
