@@ -308,14 +308,28 @@ def get_workspace_permissions(client, object_type: str, object_id: str) -> Tuple
         "registeredModel": "registered-models",
         "genieSpace": "genie",
     }
+    multiple_type_mapping = {
+        "dbsql-dashboards": ["dbsql-dashboards", "dashboards"],
+        "dashboards": ["dashboards", "dbsql-dashboards"],
+        "alerts": ["alerts", "alertsv2"],
+    }
     
     permissions_type = type_mapping.get(object_type)
     if not permissions_type:
         return [], f"Unsupported object type '{object_type}' for workspace permissions API"
-    
+    permissions = None
     try:
+        if permissions_type in multiple_type_mapping:
+            for perm_type in multiple_type_mapping[permissions_type]:
+                try:
+                    permissions = client.permissions.get(perm_type, object_id)
+                    permissions_type = perm_type
+                    break
+                except Exception as e:
+                    continue
+        else:
+            permissions = client.permissions.get(permissions_type, object_id)
         # Use positional arguments - same as 04_discover.py get_permissions_safe()
-        permissions = client.permissions.get(permissions_type, object_id)
         acl_list = []
         
         if permissions.access_control_list:

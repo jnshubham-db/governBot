@@ -1360,6 +1360,19 @@ def _revert_workspace_permissions(client, object_id: str, object_type: str, appr
     permissions_api_type = type_mapping.get(object_type)
     if not permissions_api_type:
         return (False, f"Unsupported object type: {object_type}")
+    multiple_type_mapping = {
+        "dbsql-dashboards": ["dbsql-dashboards", "dashboards"],
+        "dashboards": ["dashboards", "dbsql-dashboards"],
+        "alerts": ["alerts", "alertsv2"],
+    }
+    if permissions_api_type in multiple_type_mapping:
+            for perm_type in multiple_type_mapping[permissions_api_type]:
+                try:
+                    _ = client.permissions.get(perm_type, object_id)
+                    permissions_api_type = perm_type
+                    break
+                except Exception:
+                    continue
     
     # Determine target ACLs
     if approved_perms and approved_perms[0].permissions:
