@@ -43,18 +43,30 @@ schema = "sch_mng_admon"
 
 #dbutils.widgets.text("catalog", "qadl", "Catalog Name")
 #dbutils.widgets.text("schema", "sch_mng_admon", "Schema Name")
+#dbutils.widgets.text("account_id","", "Account ID")
 #dbutils.widgets.text("lookback_hours", "24", "Lookback Hours for Audit Logs")
 #dbutils.widgets.dropdown("sync_creations", "Y", ["Y", "N"], "Sync New Creations")
 #dbutils.widgets.dropdown("sync_permissions", "Y", ["Y", "N"], "Sync Permission Changes")
 #dbutils.widgets.dropdown("sync_entitlements", "Y", ["Y", "N"], "Sync Entitlement Changes")
 #dbutils.widgets.dropdown("sync_deletions", "Y", ["Y", "N"], "Sync Object Deletion")
+#dbutils.widgets.dropdown("sync_serverless_budget_policies", "Y", ["Y", "N"], "Sync Serverless Budget Policies")
 dbutils.widgets.dropdown("auth_type","azure-client-secret",["pat","azure-client-secret"],"Auth Type")
 
 # COMMAND ----------
 
 #catalog = dbutils.widgets.get("catalog")
 #schema = dbutils.widgets.get("schema")
-lookback_hours = int(dbutils.widgets.get("lookback_hours"))
+try:
+    account_id = dbutils.widgets.get("account_id")
+except Exception as e:
+    account_id = None
+account_url = f"https://accounts.azuredatabricks.net/"
+
+try:
+    lookback_hours = int(dbutils.widgets.get("lookback_hours"))
+except Exception as e:
+    lookback_hours = 24
+
 try:
     auth_type = dbutils.widgets.get("auth_type")
 except Exception as e:
@@ -103,6 +115,11 @@ try:
 except Exception as e:
     sync_deletions = True
 try:
+    sync_serverless_budget_policies = dbutils.widgets.get("sync_serverless_budget_policies") == "Y"
+except Exception as e:
+    sync_serverless_budget_policies = True
+
+try:
     load_filters = True if dbutils.widgets.get("load_filters") == "Y" or dbutils.widgets.get("load_filters") == "S" else False
 except:
     load_filters = False
@@ -118,6 +135,7 @@ print(f"Lookback Hours: {lookback_hours}")
 print(f"Sync Creations: {sync_creations}")
 print(f"Sync Permissions: {sync_permissions}")
 print(f"Sync Entitlements: {sync_entitlements}")
+print(f"Sync Serverless Budget Policies: {sync_serverless_budget_policies}")
 print(f"Load Filters: {load_filters}")
 print(f"Enable Discover: {enable_discover}")
 
@@ -137,6 +155,17 @@ if load_filters or enable_discover:
     'timestamp': datetime.now(tz).isoformat()
 }, indent=3))
    
+# COMMAND ----------
+
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark.sql import Row
+from datetime import datetime
+from databricks.sdk import WorkspaceClient, AccountClient
+from typing import List, Dict, Any, Tuple, Optional
+import json
+import requests
+
 # COMMAND ----------
 
 # Get current workspace ID
@@ -171,6 +200,32 @@ def create_workspace_client(workspace_url: str) -> WorkspaceClient:
         )
     else:
         return WorkspaceClient()
+
+def create_account_client(account_url: str, account_id: str) -> AccountClient:
+    """Create a AccountClient with Azure authentication using Key Vault secrets."""    
+    if kv_scope and auth_type == "azure-client-secret":
+        # Get credentials from Key Vault
+        azure_client_id = kv_client_id_key #Service principal with account and billing access provided
+        azure_client_secret = dbutils.secrets.get(scope=kv_scope, key=kv_client_secret_key)
+        tenant_id = dbutils.secrets.get(scope=kv_scope, key=kv_tenant_id_key)
+
+
+        return AccountClient(
+            host=account_url,
+            account_id=account_id,
+            azure_client_id=azure_client_id,
+            azure_client_secret=azure_client_secret,
+            azure_tenant_id=tenant_id,
+            auth_type="azure-client-secret"
+        )
+    elif kv_scope and auth_type == "pat":
+        return AccountClient(
+            host=account_url,
+            token = client_secret,
+            auth_type="pat"
+        )
+    else:
+        return AccountClient()
 
 
 # COMMAND ----------
@@ -215,16 +270,10 @@ for ws_id, ws_url in zip(workspace_ids, workspace_urls):
         print(f"  → Using default client for workspace {ws_id} ({ws_url})")
         workspace_clients[ws_id] = WorkspaceClient()
 
-# COMMAND ----------
-
-from pyspark.sql.functions import *
-from pyspark.sql.types import *
-from pyspark.sql import Row
-from datetime import datetime
-from databricks.sdk import WorkspaceClient
-from typing import List, Dict, Any, Tuple, Optional
-import json
-import requests
+if account_id:
+    account_client = create_account_client(account_url, account_id)
+else:
+    account_client = None
 
 # COMMAND ----------
 
@@ -1695,6 +1744,90 @@ if sync_entitlements and permission_ids_str and entitlement_filters:
 else:
     print("Skipping entitlement sync (disabled, no approved identities, or no entitlement filters)")
 
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Sync Serverless Budget Policies by Approved Users
+
+# COMMAND ----------
+
+def discover_serverless_budget_policies(client: AccountClient, account_id: str, workspace_ids: List[str]) -> List[Dict[str, Any]]:
+    """Discover all serverless budget policies binded to the workspace."""
+    discovered = []
+    print(f"Discovering Serverless Budget Policies...")
+    try:
+        budget_policies = client.budget_policy.list()
+        for policy in budget_policies:
+            if any(workspace_id not in policy.binding_workspace_ids for workspace_id in workspace_ids):
+                continue
+            object_id = policy.policy_id
+            object_name = policy.policy_name
+            binding_workspace_ids = policy.binding_workspace_ids
+            policy_name = f"accounts/{account_id}/budgetPolicies/{object_id}/ruleSets/default"
+            rule_set = client.access_control.get_rule_set(name=policy_name, etag='')
+            acls = rule_set.grant_rules
+            etag = rule_set.etag
+            permissions = []
+            for acl in acls:
+                permission_level = acl.role
+                for principal in acl.principals:
+                    principal_type, principal_email = principal.split('/', maxsplit=1)
+                    permissions.append(Row(
+                        principal_email=principal_email,
+                        principal_type=principal_type,
+                        permission_level=permission_level))
+            discovered.append({
+                'object_id': object_id,
+                'workspace_id': workspace_id,
+                'object_type': 'serverless_budget_policy',
+                'object_name': object_name,
+                'metadata': {'binding_workspace_ids': binding_workspace_ids, 'etag': etag},
+                'permissions': permissions,
+                'is_active': True,
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)})
+    except Exception as e:
+        print(f"✗ Error discovering Serverless Budget Policies: {str(e)}")
+    
+    return discovered
+
+# COMMAND ----------
+
+serverless_budget_policies_synced = 0
+serverless_budget_policies_updated = 0
+serverless_budget_policies_added = 0
+serverless_budget_policies_deleted = 0
+
+
+if sync_serverless_budget_policies and account_client:
+    print("="*80)
+    print("SYNCING SERVERLESS BUDGET POLICIES BY APPROVED USERS")
+    print("="*80)
+    
+    serverless_budget_policies = discover_serverless_budget_policies(account_client, account_id, enabled_workspace_ids)
+    if serverless_budget_policies:
+        serverless_budget_policies_df = spark.createDataFrame(serverless_budget_policies)
+        serverless_budget_policies_df.createOrReplaceTempView("serverless_budget_policies")
+        rows_merged = spark.sql(f"""
+            MERGE INTO {catalog}.{schema}.governance_preapproved_objects AS target
+            USING serverless_budget_policies AS source
+            ON target.workspace_id = source.workspace_id AND target.object_id = source.object_id AND target.is_active = true WHEN MATCHED THEN UPDATE SET
+                object_name = source.object_name,
+                permissions = source.permissions,
+                metadata = source.metadata,
+                updated_at = source.updated_at
+            WHEN NOT MATCHED THEN INSERT *
+            WHEN NOT MATCHED BY SOURCE THEN DELETE
+        """).collect()[0]
+        serverless_budget_policies_synced = rows_merged[0]
+        serverless_budget_policies_updated = rows_merged[1]
+        serverless_budget_policies_deleted = rows_merged[2]
+        serverless_budget_policies_added = rows_merged[3]
+        print(f"✓ Updated serverless budget policies for {serverless_budget_policies_updated} existing policies")
+        print(f"✓ Added {serverless_budget_policies_added} new policies with permissions")
+        print(f"✓ Deleted {serverless_budget_policies_deleted} existing policies")
+else:
+    print("Skipping serverless budget policy sync (disabled or no account client)")
 
 # COMMAND ----------
 
@@ -1723,6 +1856,10 @@ print(f"  - New Objects Added:            {permissions_added}")
 print(f"  - Entitlement Changes Found:    {entitlements_synced}")
 print(f"  - Entitlements Updated:         {entitlements_updated}")
 print(f"  - New Identities Added:         {entitlements_added}")
+print(f"  - Serverless Budget Policies Synced: {serverless_budget_policies_synced}")
+print(f"  - Serverless Budget Policies Updated: {serverless_budget_policies_updated}")
+print(f"  - Serverless Budget Policies Added: {serverless_budget_policies_added}")
+print(f"  - Serverless Budget Policies Deleted: {serverless_budget_policies_deleted}")
 print("="*80)
 
 # Show current state of pre-approved objects
@@ -1756,5 +1893,9 @@ dbutils.notebook.exit(json.dumps({
     'entitlements_updated': entitlements_updated,
     'entitlements_added': entitlements_added,
     'deletions_synced': deletions_synced,
+    'serverless_budget_policies_synced': serverless_budget_policies_synced,
+    'serverless_budget_policies_updated': serverless_budget_policies_updated,
+    'serverless_budget_policies_added': serverless_budget_policies_added,
+    'serverless_budget_policies_deleted': serverless_budget_policies_deleted,
     'timestamp': datetime.now(tz).isoformat()
 }, indent=3))

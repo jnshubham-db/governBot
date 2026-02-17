@@ -82,18 +82,25 @@ print(f"Timezone: {tz}")
 #                           "vectorSearchEndpoints", "vectorIndexes", "catalogs", "schemas", "tables", "volumes", 
 #                           "functions", "connections", "externalLocations", "storageCredentials", "shares", 
 #                           "recipients", "providers", "cleanRooms", "metastores", "genieSpaces", 
-#                           "ucRegisteredModels", "featureTables", "groups", "tokensAcls", "users", "servicePrincipals", "anyFiles"],
+#                           "ucRegisteredModels", "featureTables", "groups", "tokensAcls", "users", "servicePrincipals", "anyFiles", "budgetPolicies"],
 #                          "Object Types to Discover")
 #dbutils.widgets.dropdown("use_selective_filter", "Y", ["Y", "N"], "Use Selective Filtering")
 #dbutils.widgets.text("max_threads", "10", "Max Threads for Workspace Discovery")
 #dbutils.widgets.dropdown("debug_permissions", "N", ["Y", "N"], "Debug Permission Fetching")
 #dbutils.widgets.dropdown("auth_type","azure-client-secret",["pat","azure-client-secret"],"Auth Type")
 #dbutils.widgets.dropdown("enable_discover","Y",["Y","N"],"Enable discover")
+#dbutils.widgets.text("account_id","", "Account ID")
 
 # COMMAND ----------
 
 #catalog = dbutils.widgets.get("catalog")
 #schema = dbutils.widgets.get("schema")
+try:
+    account_id = dbutils.widgets.get("account_id")
+except:
+    account_id = ""
+
+account_url = f"https://accounts.azuredatabricks.net/"
 try:
     workspace_id = dbutils.widgets.get("workspace_id")
 except:
@@ -3108,6 +3115,53 @@ def discover_any_files_securables(client: WorkspaceClient, workspace_id: str) ->
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Serverless budget policies discovery
+
+# COMMAND ----------
+
+def discover_serverless_budget_policies(client: AccountClient, account_id: str, workspace_id: str) -> List[Dict[str, Any]]:
+    """Discover all serverless budget policies binded to the workspace."""
+    discovered = []
+    print(f"Discovering Serverless Budget Policies...")
+    try:
+        budget_policies = client.budget_policy.list()
+        for policy in budget_policies:
+            if workspace_id not in policy.binding_workspace_ids:
+                continue
+            object_id = policy.policy_id
+            object_name = policy.policy_name
+            binding_workspace_ids = policy.binding_workspace_ids
+            policy_name = f"accounts/{account_id}/budgetPolicies/{object_id}/ruleSets/default"
+            rule_set = client.access_control.get_rule_set(name=policy_name, etag='')
+            acls = rule_set.grant_rules
+            etag = rule_set.etag
+            permissions = []
+            for acl in acls:
+                permission_level = acl.role
+                for principal in acl.principals:
+                    principal_type, principal_email = principal.split('/', maxsplit=1)
+                    permissions.append(Row(
+                        principal_email=principal_email,
+                        principal_type=principal_type,
+                        permission_level=permission_level))
+            discovered.append({
+                'object_id': object_id,
+                'workspace_id': workspace_id,
+                'object_type': 'serverless_budget_policy',
+                'object_name': object_name,
+                'metadata': {'binding_workspace_ids': binding_workspace_ids, 'etag': etag},
+                'permissions': permissions,
+                'is_active': True,
+                'created_at': datetime.now(tz),
+                'updated_at': datetime.now(tz)})
+    except Exception as e:
+        print(f"✗ Error discovering Serverless Budget Policies: {str(e)}")
+    
+    return discovered
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Run Discovery
 
 # COMMAND ----------
@@ -3163,6 +3217,8 @@ discovery_functions = {
     'users': discover_users,
     'servicePrincipals': discover_service_principals,
     'anyFiles': discover_any_files_securables,
+    # Account features
+    'budgetPolicies': lambda _, w: discover_serverless_budget_policies(account_client, account_id, w),
 }
 
 all_discovered = []
@@ -3174,6 +3230,7 @@ print("="*80)
 
 #Client
 client = create_workspace_client(workspace_url)
+account_client = create_account_client(account_url, account_id)
 
 with ThreadPoolExecutor(max_workers=min(len(object_types), 7)) as executor:
     # Submit all discovery tasks
