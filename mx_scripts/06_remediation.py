@@ -245,6 +245,7 @@ new_violations_df = spark.sql(f"""
         violation_reason,
         remediation_action,
         0 as retry_count,
+        null as remediation_details,
         current_timestamp() as created_at
     FROM {staging_table}
     WHERE processing_status IN ('PENDING', 'PENDING_REPORT')
@@ -268,6 +269,7 @@ retryable_violations_df = spark.sql(f"""
         v.violation_reason,
         v.remediation_action,
         ca.retry_count + 1 as retry_count,
+        ca.remediation_details,
         ca.created_at as created_at
     FROM {staging_table} v
     INNER JOIN {control_actions_table} ca ON v.violation_id = ca.violation_id
@@ -1103,6 +1105,9 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
           AND object_id = '{object_id}'
           AND is_active = true
     """).collect()
+
+    if approved_perms is None:
+        return (False, f"No pre-approved permissions found for {object_id} of type {object_type}. Retrying later.")
     
     # Route to appropriate handler
     if object_type in UC_OBJECT_TYPES:
@@ -1692,6 +1697,7 @@ for violation_row in violations_list:
     workspace_id = violation['workspace_id']
     retry_count = violation['retry_count']
     created_at = violation['created_at']
+    previous_remediation_details = violation['remediation_details']
     
     # Get the pre-created client for this workspace
     workspace_object = workspace_objects.get(workspace_id, {'client': WorkspaceClient(), 'warehouse_id': None})
@@ -1717,7 +1723,7 @@ for violation_row in violations_list:
         'object_name': violation['object_name'],
         'violator_email': violation['user_email'],
         'remediation_status': status,
-        'remediation_details': details,
+        'remediation_details': f"{previous_remediation_details if previous_remediation_details else ''}Retry: {retry_count}\n{details}\n",
         'backup_definition': backup_definition,
         'error_message': error,
         'retry_count': retry_count,

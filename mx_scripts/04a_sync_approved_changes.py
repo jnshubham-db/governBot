@@ -1831,6 +1831,23 @@ else:
 
 # COMMAND ----------
 
+control_actions_table = f"{catalog}.{schema}.governance_control_actions"
+print(f"Setting inactive objects as skipped in control actions table: {control_actions_table}")
+skipped_violations = spark.sql(rf"""
+MERGE INTO {control_actions_table} AS target
+USING (
+    select object_id, object_type from {catalog}.{schema}.governance_preapproved_objects where is_active = false
+) AS source
+ON target.object_id = source.object_id AND target.object_type = source.object_type
+WHEN MATCHED THEN UPDATE SET
+    remediation_status = 'SKIPPED'
+    remediation_details = concat_ws('\n', target.remediation_details, 'Skipping as Object is inactive.', CURRENT_TIMESTAMP())
+    updated_at = CURRENT_TIMESTAMP()
+""").collect()[0]
+skipped_violations_count = skipped_violations[0]
+print(f"Skipped {skipped_violations_count} violations by objects marked as inactive")
+
+# COMMAND ----------
 # MAGIC %md
 # MAGIC ## Summary
 
@@ -1860,6 +1877,7 @@ print(f"  - Serverless Budget Policies Synced: {serverless_budget_policies_synce
 print(f"  - Serverless Budget Policies Updated: {serverless_budget_policies_updated}")
 print(f"  - Serverless Budget Policies Added: {serverless_budget_policies_added}")
 print(f"  - Serverless Budget Policies Deleted: {serverless_budget_policies_deleted}")
+print(f"  - Skipped Violations: {skipped_violations_count}")
 print("="*80)
 
 # Show current state of pre-approved objects
@@ -1897,5 +1915,6 @@ dbutils.notebook.exit(json.dumps({
     'serverless_budget_policies_updated': serverless_budget_policies_updated,
     'serverless_budget_policies_added': serverless_budget_policies_added,
     'serverless_budget_policies_deleted': serverless_budget_policies_deleted,
+    'skipped_violations': skipped_violations_count,
     'timestamp': datetime.now(tz).isoformat()
 }, indent=3))
