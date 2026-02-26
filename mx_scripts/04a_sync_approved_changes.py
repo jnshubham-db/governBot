@@ -1838,7 +1838,7 @@ MERGE INTO {control_actions_table} AS target
 USING (
     select object_id, object_type from {catalog}.{schema}.governance_preapproved_objects where is_active = false
 ) AS source
-ON target.object_id = source.object_id AND target.object_type = source.object_type
+ON target.object_id = source.object_id AND target.object_type = source.object_type AND target.remediation_status not in ('SKIPPED', 'SUCCESS')
 WHEN MATCHED THEN UPDATE SET
     remediation_status = 'SKIPPED'
     remediation_details = concat_ws('\n', target.remediation_details, 'Skipping as Object is inactive.', CURRENT_TIMESTAMP())
