@@ -48,6 +48,7 @@ schema = "sch_mng_admon"
 #dbutils.widgets.dropdown("sync_creations", "Y", ["Y", "N"], "Sync New Creations")
 #dbutils.widgets.dropdown("sync_permissions", "Y", ["Y", "N"], "Sync Permission Changes")
 #dbutils.widgets.dropdown("sync_entitlements", "Y", ["Y", "N"], "Sync Entitlement Changes")
+#dbutils.widgets.dropdown("sync_uc_object_changes", "Y", ["Y", "N"], "Sync Unity Catalog Object Changes")
 #dbutils.widgets.dropdown("sync_deletions", "Y", ["Y", "N"], "Sync Object Deletion")
 #dbutils.widgets.dropdown("sync_serverless_budget_policies", "Y", ["Y", "N"], "Sync Serverless Budget Policies")
 dbutils.widgets.dropdown("auth_type","azure-client-secret",["pat","azure-client-secret"],"Auth Type")
@@ -110,6 +111,10 @@ try:
 except Exception as e:
     sync_entitlements = True
 
+try:
+    sync_uc_object_changes = dbutils.widgets.get("sync_uc_object_changes") == "Y"
+except Exception as e:
+    sync_uc_object_changes = True
 try:
     sync_deletions = dbutils.widgets.get("sync_deletions") == "Y"
 except Exception as e:
@@ -908,11 +913,13 @@ create_filters = [f for f in filters_list if f.violation_type == 'UNAPPROVED_CRE
 acl_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_PERMISSION_CHANGE']
 entitlement_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_ENTITLEMENT_CHANGE']
 deletion_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_DELETION']
+uc_object_changes_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_UC_OBJECT_CHANGE']
 
 print(f"Loaded {len(create_filters)} create filters")
 print(f"Loaded {len(acl_filters)} ACL change filters")
 print(f"Loaded {len(entitlement_filters)} entitlement change filters")
 print(f"Loaded {len(deletion_filters)} deletion filters")
+print(f"Loaded {len(uc_object_changes_filters)} Unity Catalog object changes filters")
 
 
 # COMMAND ----------
@@ -1831,6 +1838,74 @@ else:
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Sync Unity Catalog Object Changes by Approved Users
+
+# COMMAND ----------
+uc_object_changes_updated = 0
+
+if sync_uc_object_changes and permission_ids_str and uc_object_changes_filters:
+    print("="*80)
+    print("SYNCING UNITY CATALOG OBJECT CHANGES BY APPROVED USERS")
+    print("="*80)
+    
+    uc_object_changes_query = build_approved_user_query(
+        uc_object_changes_filters,
+        "0", # All workspaces as Unity catalog event is not workspace bounded
+        lookback_hours,
+        permission_ids_str,
+        is_permission_change=False,
+        is_delete_event=False,
+        is_entitlement_change=False
+    )
+    
+    if uc_object_changes_query:
+        uc_object_changes_events_df = (spark.sql(uc_object_changes_query)
+                                       .filter((coalesce(col('request_params.dry_run'), 'false') != 'true')
+                                               & (col("object_id") != col("object_name"))) # Filter out only name changes
+                                       .withColumnRenamed("object_name", "new_object_name")
+                                       .select("object_id", "new_object_name"))
+        
+        uc_object_changes_count = uc_object_changes_events_df.count()
+        print(f"Found {uc_object_changes_count} Unity Catalog object changes events by approved users")
+        
+        if uc_object_changes_count > 0:
+            uc_object_changes_events_df.createOrReplaceTempView("uc_object_changes_events")
+            # Get full list of objects that have been changed due to catalog / schema changes
+            spark.sql("""
+                CREATE OR REPLACE TEMPORARY VIEW uc_object_changes_final_changes AS
+                SELECT target.object_id, source.new_object_name, source.object_type 
+                FROM uc_object_changes_events AS source
+                INNER JOIN {catalog}.{schema}.governance_preapproved_objects target
+                ON CASE 
+                    WHEN 
+                        target.object_type = source.object_type and target.object_id = source.object_id
+                    THEN TRUE
+                    WHEN
+                        source.object_type in ('catalog','schema') AND target.object_id like source.object_id || '.%'
+                    THEN TRUE
+                    ELSE FALSE
+                    END
+                WHERE target.is_active = true
+            """)
+            
+            rows_merged = spark.sql(f"""
+                MERGE INTO {catalog}.{schema}.governance_preapproved_objects AS target
+                USING uc_object_changes_final_changes AS source
+                ON target.object_id like source.object_id
+                -- Unity catalog object id is the full name of the object, so we need to update the object_id to the new object name
+                WHEN MATCHED THEN UPDATE SET
+                    object_id = source.new_object_name,
+                    object_name = source.new_object_name,
+                    updated_at = current_timestamp()
+            """).collect()[0]
+            uc_object_changes_updated = rows_merged[1]
+            print(f"✓ Updated {uc_object_changes_updated} existing Unity Catalog objects")
+else:
+    print("Skipping Unity Catalog object changes sync (disabled, no approved identities, or no Unity Catalog object changes filters)")
+
+# COMMAND ----------
+
 control_actions_table = f"{catalog}.{schema}.governance_control_actions"
 print(f"Setting inactive objects as skipped in control actions table: {control_actions_table}")
 skipped_violations = spark.sql(rf"""
@@ -1877,6 +1952,7 @@ print(f"  - Serverless Budget Policies Synced: {serverless_budget_policies_synce
 print(f"  - Serverless Budget Policies Updated: {serverless_budget_policies_updated}")
 print(f"  - Serverless Budget Policies Added: {serverless_budget_policies_added}")
 print(f"  - Serverless Budget Policies Deleted: {serverless_budget_policies_deleted}")
+print(f"  - Unity Catalog Object Changes Updated: {uc_object_changes_updated}")
 print(f"  - Skipped Violations: {skipped_violations_count}")
 print("="*80)
 
@@ -1915,6 +1991,7 @@ dbutils.notebook.exit(json.dumps({
     'serverless_budget_policies_updated': serverless_budget_policies_updated,
     'serverless_budget_policies_added': serverless_budget_policies_added,
     'serverless_budget_policies_deleted': serverless_budget_policies_deleted,
+    'uc_object_changes_updated': uc_object_changes_updated,
     'skipped_violations': skipped_violations_count,
     'timestamp': datetime.now(tz).isoformat()
 }, indent=3))

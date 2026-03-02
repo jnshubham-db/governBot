@@ -1605,7 +1605,22 @@ def execute_remediation(client, warehouse_id: str, violation: dict, dry_run: boo
                 object_name,
                 object_type,
                 action_name)
-        
+
+        elif remediation_action == 'REPORT_UC_OBJECT_UPDATE':
+            # Report Unity Catalog object update to security team - no automated action needed as changes only can be done by allowed identities
+            # This is logged in control_actions table for security team review
+            print(f"📋 Logging Unity Catalog object update event for security team review:")
+            print(f"   Object Type: {object_type}")
+            print(f"   Object ID: {object_id}")
+            print(f"   Object Name: {object_name}")
+            print(f"   Updated By: {violation.get('user_email', 'Unknown')}")
+            print(f"   Action: {violation.get('action_name', 'Unknown')}")
+
+            success = True
+            error = None
+            details = f"Unity Catalog object update reported for security team review: {object_type} '{object_name}' (ID: {object_id}) updated by {violation.get('user_email', 'Unknown')}"
+            print(f"✓ {details}")
+
         else:
             success, error = False, f"Unknown remediation action: {remediation_action}"
             details = error

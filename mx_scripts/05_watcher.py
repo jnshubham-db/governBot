@@ -251,12 +251,14 @@ create_filters = [f for f in filters_list if f.violation_type == 'UNAPPROVED_CRE
 acl_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_PERMISSION_CHANGE']
 delete_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_DELETION']
 entitlement_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_ENTITLEMENT_CHANGE']
+uc_object_changes_filters = [f for f in filters_list if f.violation_type == 'UNAUTHORIZED_UC_OBJECT_CHANGE']
 
 print(f"\nFilter breakdown:")
 print(f"  - Create filters: {len(create_filters)}")
 print(f"  - ACL change filters: {len(acl_filters)}")
 print(f"  - Delete filters: {len(delete_filters)}")
 print(f"  - Entitlement change filters: {len(entitlement_filters)}")
+print(f"  - Unity Catalog object changes filters: {len(uc_object_changes_filters)}")
 
 # COMMAND ----------
 
@@ -1040,6 +1042,40 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Query Audit Logs for Unity Catalog Object Changes
+
+# COMMAND ----------
+
+uc_object_changes_query = build_audit_query_from_filters(
+    uc_object_changes_filters,
+    "0", # All workspaces
+    lookback_hours,
+    permission_approved_identities_str,
+    is_permission_change=False,
+    is_delete_event=False,
+    is_entitlement_change=False
+)
+
+if uc_object_changes_query:
+    if show_query:
+        print(uc_object_changes_query)
+    
+    uc_object_changes_events_df = spark.sql(uc_object_changes_query).filter(coalesce(col('request_params.dry_run'), 'false') != 'true')
+    
+    uc_object_changes_events_count = uc_object_changes_events_df.count()
+    print(f"⚠ Found {uc_object_changes_events_count} Unity Catalog object changes events by unauthorized identities")
+    uc_object_changes_events_df.groupBy("service_name","action_name").count().orderBy("count", ascending=False).display()
+
+    #Summay by user_name/display name
+    uc_object_changes_events_df.alias('evt').join(dfInfoUsers.alias('u'),on = [uc_object_changes_events_df.user_email == dfInfoUsers.USER_NAME], how = 'left').groupBy("evt.user_email","u.DISPLAY_NAME","u.OWNER_SUITS").count().orderBy("count", ascending=False).display()    
+else:
+    uc_object_changes_events_df = None
+    uc_object_changes_events_count = 0
+    print("No active Unity Catalog object changes filters defined")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Join Create Events with Pre-Approved Objects
 
 # COMMAND ----------
@@ -1105,6 +1141,10 @@ if entitlement_events_parsed_df and entitlement_events_count > 0:
 if delete_events_parsed_df and delete_events_count > 0:
     all_events.append(delete_events_parsed_df)
 
+# Add Unity Catalog object changes events (all are violations since already filtered by unauthorized identities)
+if uc_object_changes_events_df and uc_object_changes_events_count > 0:
+    all_events.append(uc_object_changes_events_df)
+
 if all_events:
     # Union all event DataFrames using unionByName for schema safety
     all_violation_events_df = all_events[0]
@@ -1121,6 +1161,7 @@ print(f"  - Unapproved creations: {unapproved_creation_count}")
 print(f"  - Unauthorized ACL changes: {acl_events_count}")
 print(f"  - Unauthorized entitlement changes: {entitlement_events_count}")
 print(f"  - Unauthorized deletions: {delete_events_count}")
+print(f"  - Unauthorized Unity Catalog object changes: {uc_object_changes_events_count}")
 
 if total_events_count == 0:
     print("\nNo violations detected. Exiting.")
@@ -1293,12 +1334,14 @@ create_violations = violations_staging_df.filter(col("violation_type") == "UNAPP
 permission_violations = violations_staging_df.filter(col("violation_type") == "UNAUTHORIZED_PERMISSION_CHANGE").count()
 delete_violations = violations_staging_df.filter(col("violation_type") == "UNAUTHORIZED_DELETION").count()
 entitlement_violations = violations_staging_df.filter(col("violation_type") == "UNAUTHORIZED_ENTITLEMENT_CHANGE").count()
+uc_object_changes_violations = violations_staging_df.filter(col("violation_type") == "UNAUTHORIZED_UC_OBJECT_CHANGE").count()
 
 print(f"\nViolations by Type (after filtering):")
 print(f"  - Unapproved Creations:           {create_violations}")
 print(f"  - Unauthorized Permission Changes: {permission_violations}")
 print(f"  - Unauthorized Deletions:          {delete_violations}")
 print(f"  - Unauthorized Entitlement Changes: {entitlement_violations}")
+print(f"  - Unauthorized Unity Catalog object changes: {uc_object_changes_violations}")
 print(f"  - Total:                           {final_violations_count}")
 
 # Show sample violations
@@ -1367,11 +1410,13 @@ print(f"  - Create Events:                {create_events_count}")
 print(f"  - ACL Change Events:            {acl_events_count}")
 print(f"  - Entitlement Change Events:    {entitlement_events_count}")
 print(f"  - Delete Events:                {delete_events_count}")
+print(f"  - Unity Catalog object changes events: {uc_object_changes_events_count}")
 print(f"\nViolations Detected:")
 print(f"  - Unapproved Creations:         {create_violations}")
 print(f"  - Unauthorized Permission Changes: {permission_violations}")
 print(f"  - Unauthorized Deletions:       {delete_violations}")
 print(f"  - Unauthorized Entitlement Changes: {entitlement_violations}")
+print(f"  - Unauthorized Unity Catalog object changes: {uc_object_changes_violations}")
 print(f"  - Total:                        {final_violations_count}")
 print("="*80)
 
