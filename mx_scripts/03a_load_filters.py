@@ -430,20 +430,22 @@ print(f"Defined {len(workspace_admin_filters_raw)} entitlements change filters")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Unity Catalog Object Changes
+# MAGIC ## Object Changes
 # MAGIC
-# MAGIC These filters detect unauthorized Unity Catalog object changes.
+# MAGIC These filters detect unauthorized object changes.
 
 # COMMAND ----------
-# Unity Catalog object changes - detect unauthorized object changes
+# Object changes - detect unauthorized object changes
 # Format: [filter_name, service_name, action_name, object_type, object_id_expr, object_name_expr, remediation_action, extra_columns, is_active, description]
 
-uc_object_changes_filters_raw = [
-    ["uc_table_update", "unityCatalog", "updateTables", "table", "request_params.full_name_arg", "from_json(response.result, 'full_name string').full_name", "REPORT_UC_OBJECT_UPDATE", {}, True, "Unity Catalog Table name/schema has been updated"],
-    ["uc_schema_update", "unityCatalog", "updateSchema", "schema", "request_params.full_name_arg", "from_json(response.result, 'full_name string').full_name", "REPORT_UC_OBJECT_UPDATE", {}, True, "Unity Catalog Schema has been updated"],
-    ["uc_catalog_update", "unityCatalog", "updateCatalog", "catalog", "request_params.name_arg", "request_params.name", "REPORT_UC_OBJECT_UPDATE", {}, True, "Unity Catalog has change"],
+object_changes_filters_raw = [
+    ["uc_table_update", "unityCatalog", "updateTables", "table", "request_params.full_name_arg", "from_json(response.result, 'full_name string').full_name", "REPORT_OBJECT_UPDATE", {}, True, "Unity Catalog Table name/schema has been updated"],
+    ["uc_schema_update", "unityCatalog", "updateSchema", "schema", "request_params.full_name_arg", "from_json(response.result, 'full_name string').full_name", "REPORT_OBJECT_UPDATE", {}, True, "Unity Catalog Schema has been updated"],
+    ["uc_catalog_update", "unityCatalog", "updateCatalog", "catalog", "request_params.name_arg", "request_params.name", "REPORT_OBJECT_UPDATE", {}, True, "Unity Catalog has change"],
+    ["uc_registered_model_update", "unityCatalog", "updateRegisteredModel", "ucRegisteredModel", "request_params.full_name_arg", "concat_ws('.', split_part(request_params.full_name_arg, '.', 1),split_part(request_params.full_name_arg, '.', 2),coalesce(request_params.name, request_params.new_name))", "REPORT_OBJECT_UPDATE", {}, True, "UC Registered Model has been changed"],
+    ["registered_model_name_update", "modelRegistry", "renameRegisteredModel", "registeredModel", "request_params.name", "request_params.new_name", "REPORT_OBJECT_UPDATE", {}, True, "Workspace Registered model name has been updated"],
 ]
-print(f"Defined {len(uc_object_changes_filters_raw)} Unity Catalog object changes filters")
+print(f"Defined {len(object_changes_filters_raw)} object changes filters")
 
 # COMMAND ----------
 
@@ -479,13 +481,13 @@ create_filters = [convert_to_filter_record(f, "UNAPPROVED_CREATION") for f in cr
 acl_filters = [convert_to_filter_record(f, "UNAUTHORIZED_PERMISSION_CHANGE") for f in acl_filters_raw]
 delete_filters = [convert_to_filter_record(f, "UNAUTHORIZED_DELETION") for f in delete_filters_raw]
 workspace_admin_filters = [convert_to_filter_record(f, "UNAUTHORIZED_ENTITLEMENT_CHANGE") for f in workspace_admin_filters_raw]
-uc_object_changes_filters = [convert_to_filter_record(f, "UNAUTHORIZED_UC_OBJECT_CHANGE") for f in uc_object_changes_filters_raw]
+object_changes_filters = [convert_to_filter_record(f, "UNAUTHORIZED_OBJECT_CHANGE") for f in object_changes_filters_raw]
 
 print(f"Converted {len(create_filters)} create filters")
 print(f"Converted {len(acl_filters)} ACL filters")
 print(f"Converted {len(delete_filters)} delete filters")
 print(f"Converted {len(workspace_admin_filters)} workspace admin filters")
-print(f"Converted {len(uc_object_changes_filters)} Unity Catalog object changes filters")
+print(f"Converted {len(object_changes_filters)} object changes filters")
 # COMMAND ----------
 
 # MAGIC %md
@@ -493,14 +495,14 @@ print(f"Converted {len(uc_object_changes_filters)} Unity Catalog object changes 
 
 # COMMAND ----------
 
-all_filters = create_filters + acl_filters + delete_filters + workspace_admin_filters + uc_object_changes_filters
+all_filters = create_filters + acl_filters + delete_filters + workspace_admin_filters + object_changes_filters
 
 print(f"\nTotal filters defined: {len(all_filters)}")
 print(f"  - Create event filters: {len(create_filters)}")
 print(f"  - ACL change filters: {len(acl_filters)}")
 print(f"  - Delete event filters: {len(delete_filters)}")
 print(f"  - Workspace admin filters: {len(workspace_admin_filters)}")
-print(f"  - Unity Catalog object changes filters: {len(uc_object_changes_filters)}")
+print(f"  - Object changes filters: {len(object_changes_filters)}")
 
 # Count active vs inactive
 active_count = sum(1 for f in all_filters if f['is_active'])
@@ -630,7 +632,7 @@ Breakdown by Violation Type:
   - UNAUTHORIZED_PERMISSION_CHANGE: {len(acl_filters)} filters
   - UNAUTHORIZED_DELETION:          {len(delete_filters)} filters
   - UNAUTHORIZED_ENTITLEMENT_CHANGE: {len(workspace_admin_filters)} filters
-  - UNAUTHORIZED_UC_OBJECT_CHANGE: {len(uc_object_changes_filters)} filters
+  - UNAUTHORIZED_OBJECT_CHANGE: {len(object_changes_filters)} filters
 
 Active/Inactive:
   - Active filters:   {active_count}
@@ -671,6 +673,6 @@ dbutils.notebook.exit(json.dumps({
     'acl_filters': len(acl_filters),
     'delete_filters': len(delete_filters),
     'workspace_admin_filters': len(workspace_admin_filters),
-    'uc_object_changes_filters': len(uc_object_changes_filters),
+    'object_changes_filters': len(object_changes_filters),
     'timestamp': datetime.now().isoformat()
 }, indent=3))

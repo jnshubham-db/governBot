@@ -24,10 +24,11 @@
 
 # COMMAND ----------
 
-#dbutils.widgets.text("catalog", "sjdatabricks", "Catalog Name")
-#dbutils.widgets.text("schema", "sch_mng_admon", "Schema Name")
-dbutils.widgets.dropdown("dry_run", "true", ["true", "false"], "Dry Run Mode")
-dbutils.widgets.dropdown("auth_type","azure-client-secret",["pat","azure-client-secret"],"Auth Type")
+widgets = False
+
+if widgets == True:
+    dbutils.widgets.dropdown("dry_run", "true", ["true", "false"], "Dry Run Mode")
+    dbutils.widgets.dropdown("auth_type","azure-client-secret",["pat","azure-client-secret"],"Auth Type")
 
 # COMMAND ----------
 
@@ -251,6 +252,7 @@ new_violations_df = spark.sql(f"""
     WHERE processing_status IN ('PENDING', 'PENDING_REPORT')
     ORDER BY event_time ASC
 """)
+
 retryable_violations_df = spark.sql(f"""
     SELECT 
         v.violation_id,
@@ -502,9 +504,8 @@ def delete_uc_schema(client, full_name: str) -> Tuple[bool, Optional[str]]:
 def delete_uc_table(client, full_name: str) -> Tuple[bool, Optional[str]]:
     """Delete a Unity Catalog table."""
     try:
-        # client.tables.delete(full_name)
-        # return (True, None)
-        raise Exception(f"Table deletion not supported. Table: {full_name}")
+        client.tables.delete(full_name)
+        return (True, None)
     except Exception as e:
         return (False, str(e))
 
@@ -764,6 +765,13 @@ def delete_database_table(client, name: str) -> Tuple[bool, Optional[str]]:
     except Exception as e:
         return (False, str(e))
 
+def delete_repo(client, repo_id: str) -> Tuple[bool, Optional[str]]:
+    """Delete a Repos."""
+    try:
+        client.repos.delete(repo_id)
+        return (True, None)
+    except Exception as e:
+        return (False, str(e))
 # ==============================================================================
 # DELETE FUNCTION DISPATCHER
 # ==============================================================================
@@ -827,7 +835,7 @@ def get_delete_function(object_type: str):
         # Workspace objects (from changeWorkspaceAcl dynamic type detection)
         'notebook': None,  # Notebooks use REVERT_PERMISSION, not DELETE
         'folder': None,    # Folders use REVERT_PERMISSION, not DELETE
-        'repo': None,      # Repos use REVERT_PERMISSION, not DELETE
+        'repo': delete_repo,      # Repos use REVERT_PERMISSION, not DELETE
         'directory': None, # Directories use REVERT_PERMISSION, not DELETE
         'query': delete_query,  # Queries can be deleted
         # Additional object types
@@ -1047,7 +1055,8 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
     UC_OBJECT_TYPES = {
         "catalog", "schema", "table", "volume", "function", "connection",
         "externalLocation", "storageCredential", "share", "recipient",
-        "provider", "metastore", "ucRegisteredModel"
+        "provider", "metastore", "ucRegisteredModel", "registedModel",
+        "vectorIndex", "featureTable", "monitors", "external_location"
     }
     
     SECRET_SCOPE_TYPES = {"secretScope"}
@@ -1105,10 +1114,10 @@ def revert_permissions(client, workspace_id: str, object_id: str, object_type: s
           AND object_id = '{object_id}'
           AND is_active = true
     """).collect()
-
+    
     if approved_perms is None:
         return (False, f"No pre-approved permissions found for {object_id} of type {object_type}. Retrying later.")
-    
+
     # Route to appropriate handler
     if object_type in UC_OBJECT_TYPES:
         return _revert_uc_permissions(client, object_id, object_type, approved_perms)
@@ -1364,21 +1373,23 @@ def _revert_workspace_permissions(client, object_id: str, object_type: str, appr
     # Map object type to permissions API type
     permissions_api_type = type_mapping.get(object_type)
     if not permissions_api_type:
-        return (False, f"Unsupported object type: {object_type}")
+        return (False, f"Unsupported object type: {object_type} [_revert_workspace_permissions]")
+
     multiple_type_mapping = {
         "dbsql-dashboards": ["dbsql-dashboards", "dashboards"],
         "dashboards": ["dashboards", "dbsql-dashboards"],
         "alerts": ["alerts", "alertsv2"],
     }
+
     if permissions_api_type in multiple_type_mapping:
-            for perm_type in multiple_type_mapping[permissions_api_type]:
-                try:
-                    _ = client.permissions.get(perm_type, object_id)
-                    permissions_api_type = perm_type
-                    break
-                except Exception:
-                    continue
-    
+        for perm_type in multiple_type_mapping[permissions_api_type]:
+            try:
+                _ = client.permissions.get(perm_type, object_id)
+                permissions_api_type = perm_type
+                break
+            except Exception:
+                continue
+
     # Determine target ACLs
     if approved_perms and approved_perms[0].permissions:
         # Build ACL list from pre-approved permissions
@@ -1407,13 +1418,18 @@ def _revert_workspace_permissions(client, object_id: str, object_type: str, appr
         print(f"  → Clearing all explicit permissions")
     
     # Apply permissions
-    client.permissions.set(
-        request_object_type=permissions_api_type,
-        request_object_id=object_id,
-        access_control_list=acl_list
-    )
-    
-    return (True, f"Set {len(acl_list)} ACLs on {permissions_api_type}/{object_id}")
+    try:
+        client.permissions.set(
+            request_object_type=permissions_api_type,
+            request_object_id=object_id,
+            access_control_list=acl_list
+        )
+        
+        return (True, f"Set {len(acl_list)} ACLs on {permissions_api_type}/{object_id}")
+    except ResourceDoesNotExist as e:
+        return (True, f"Failed to set ACLs, because resource does not exist (SKIPPED) /{object_id}: {repr(e)}")
+    except Exception as e:
+        return (False, f"Failed to set ACLs on {permissions_api_type}/{object_id}: {repr(e)}")
 
 
 def _build_access_control_request(principal: str, permission_level: str, principal_type: str):
@@ -1456,7 +1472,6 @@ def revert_entitlement_change(client, workspace_id: str, warehouse_id: str, obje
             return (False, f"Unsupported object type: {object_type}")
     except Exception as e:
         return (False, f"Failed to revert entitlement change for {object_type}:{object_name}: {e}")
-
 
 def _revert_any_file_grant_change(client, warehouse_id: str, object_name: str, object_type: str, action_name: str) -> Tuple[bool, Optional[str]]:
     """
@@ -1519,6 +1534,7 @@ def execute_remediation(client, warehouse_id: str, violation: dict, dry_run: boo
                 error = f"Resource does not exist: {object_type}:{object_id}"
                 return ('SKIPPED', f"Skipped: {error}", error, None)
             except Exception as e:
+                error = f"Failed to backup {object_type}:{object_id}: {repr(e)}"
                 backup_definition = None
             
             if not backup_definition:
@@ -1549,7 +1565,7 @@ def execute_remediation(client, warehouse_id: str, violation: dict, dry_run: boo
         elif remediation_action == 'REVERT_PERMISSION':
             # Revert permissions: reset to pre-approved state if found in governance table,
             # otherwise remove all explicit permissions
-            print(f"Reverting permissions for {object_type}:{object_name} (ID: {object_id})")
+            print(f"Reverting permissions for {object_type}: {object_name} (ID: {object_id})")
             success, error = revert_permissions(
                 client, 
                 workspace_id, 
@@ -1558,12 +1574,15 @@ def execute_remediation(client, warehouse_id: str, violation: dict, dry_run: boo
             )
             
             if success:
-                details = f"Reverted permissions for {object_type}: {object_name}"
+                if 'ResourceDoesNotExist' in error:
+                    details = f"Reverted permissions for {object_type}: {object_name}, is SKIPPED [ResourceDoesNotExist]"
+                else:
+                    details = f"Reverted permissions for {object_type}: {object_name}"
                 print(f"✓ {details}")
             else:
                 details = f"Failed to revert permissions for {object_type}: {object_name}"
                 print(f"✗ {details} - {error}")
-        
+
         elif remediation_action == 'ALERT_ENTITLEMENT_CHANGE':
             # Alert entitlement change to security team - no automated action needed
             # This is logged in control_actions table for security team review
@@ -1578,7 +1597,7 @@ def execute_remediation(client, warehouse_id: str, violation: dict, dry_run: boo
             error = None
             details = f"Entitlement change reported for security team review: {object_type} '{object_name}' (ID: {object_id}) changed by {violation.get('user_email', 'Unknown')}"
             print(f"✓ {details}")
-        
+
         elif remediation_action == 'REPORT_DELETION' or remediation_action == 'REPORT_SECURITY_TEAM':
             # Report deletion to security team - no automated action needed
             # This is logged in control_actions table for security team review
@@ -1606,10 +1625,10 @@ def execute_remediation(client, warehouse_id: str, violation: dict, dry_run: boo
                 object_type,
                 action_name)
 
-        elif remediation_action == 'REPORT_UC_OBJECT_UPDATE':
-            # Report Unity Catalog object update to security team - no automated action needed as changes only can be done by allowed identities
+        elif remediation_action == 'REPORT_OBJECT_UPDATE':
+            # Report object update to security team - no automated action needed as changes only can be done by allowed identities
             # This is logged in control_actions table for security team review
-            print(f"📋 Logging Unity Catalog object update event for security team review:")
+            print(f"📋 Logging object update event for security team review:")
             print(f"   Object Type: {object_type}")
             print(f"   Object ID: {object_id}")
             print(f"   Object Name: {object_name}")
@@ -1618,7 +1637,7 @@ def execute_remediation(client, warehouse_id: str, violation: dict, dry_run: boo
 
             success = True
             error = None
-            details = f"Unity Catalog object update reported for security team review: {object_type} '{object_name}' (ID: {object_id}) updated by {violation.get('user_email', 'Unknown')}"
+            details = f"Object update reported for security team review: {object_type} '{object_name}' (ID: {object_id}) updated by {violation.get('user_email', 'Unknown')}"
             print(f"✓ {details}")
 
         else:
@@ -1648,7 +1667,7 @@ import uuid
 workspace_configs = {}
 ws_config_df = spark.sql(f"""
     SELECT 
-        workspace_id, 
+        workspace_id,
         warehouse_id,
         workspace_url,
         max_retry_attempts
