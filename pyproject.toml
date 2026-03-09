@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "governbot-core"
+version = "0.1.0"
+description = "GovernBot core library: governance config, clients, filters, identities, remediation"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "databricks-sdk>=0.20.0",
+    "python-dotenv>=1.0.0",
+    "pytz>=2021.1",
+]
+
+[project.optional-dependencies]
+pyspark = ["pyspark>=3.0.0"]
+dev = ["pytest>=7.0.0", "pytest-mock>=3.0.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/governbot_core"]
+
+[dependency-groups]
+dev = ["pytest>=7.0.0", "pytest-mock>=3.0.0"]
