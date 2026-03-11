@@ -1,8 +1,17 @@
 .env
 dist/
+# Allow app frontend build so deploy includes the React UI (uncomment to commit frontend/dist)
+# !app/frontend/dist/
 *.egg-info/
 .eggs/
 __pycache__/
 *.pyc
 .pytest_cache/
 .uv/
+
+# Databricks Asset Bundles
+.databricks/
+app/frontend/dist/
+node_modules/
+scripts/
+test_data_gen/

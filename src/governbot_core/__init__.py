@@ -10,7 +10,7 @@ from governbot_core.clients import ClientFactory
 from governbot_core.workspaces import load_enabled_workspaces
 from governbot_core.filters import load_filters
 from governbot_core.audit_queries import build_audit_query_from_filters, build_approved_user_query
-from governbot_core.permissions import detect_principal_type, build_access_control_request
+from governbot_core.permissions import detect_principal_type, build_access_control_request, resolve_identity_by_id
 from governbot_core.remediation import execute_remediation, revert_permissions
 from governbot_core import discovery_impl
 from governbot_core import sync_impl
@@ -29,6 +29,7 @@ __all__ = [
     "build_approved_user_query",
     "detect_principal_type",
     "build_access_control_request",
+    "resolve_identity_by_id",
     "execute_remediation",
     "revert_permissions",
     "discovery_impl",

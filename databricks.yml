@@ -1,0 +1,43 @@
+# Databricks Asset Bundle (DABs) — deploy GovernBot app (React + FastAPI)
+# https://docs.databricks.com/en/dev-tools/bundles/
+#
+# Before deploy: build the React frontend so the UI is included (see app/APP_DEPLOYMENT_README.md).
+#   cd app/frontend && npm ci && npm run build
+#
+# 1. Set workspace host below for your target(s).
+# 2. Auth: databricks auth login --host <your-workspace-url>
+# 3. Deploy: databricks bundle validate && databricks bundle deploy -t dev
+# 4. Run app: databricks bundle run governbot_app -t dev
+# 5. Set app env vars in the Databricks App UI (or in app/app.yaml): GOVERNANCE_CATALOG, GOVERNANCE_SCHEMA, DATABRICKS_APP_WAREHOUSE_HTTP_PATH.
+
+bundle:
+  name: governbot
+
+# Only sync what the app needs at runtime (avoids node_modules and frontend source).
+sync:
+  include:
+    - "app/backend/**"
+    - "app/frontend/dist/**"
+    - "app/app.yaml"
+  exclude:
+    - "**/node_modules/**"
+    - "**/__pycache__/**"
+
+resources:
+  apps:
+    governbot_app:
+      name: governbot
+      description: "GovernBot — governance violations summary, actions, and configuration"
+      source_code_path: app
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com
+
+  prod:
+    mode: production
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com

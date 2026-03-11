@@ -1,0 +1,18 @@
+# GovernBot React + FastAPI app — Databricks App
+# Build frontend first: cd frontend && npm ci && npm run build
+# Then the backend serves the React build and the API.
+command:
+  - uvicorn
+  - backend.main:app
+  - --host
+  - "0.0.0.0"
+  - --port
+  - "8000"
+
+env:
+  - name: GOVERNANCE_CATALOG
+    value: "karthik_auto_validator_1"
+  - name: GOVERNANCE_SCHEMA
+    value: "govern_bot"
+  - name: DATABRICKS_APP_WAREHOUSE_HTTP_PATH
+    value: "/sql/1.0/warehouses/8baced1ff014912d"

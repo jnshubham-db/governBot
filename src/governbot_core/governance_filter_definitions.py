@@ -124,13 +124,13 @@ def _delete_filters_raw():
         ["uc_credential_delete", "unityCatalog", "deleteCredential", "credential", "request_params.name_arg", "request_params.name_arg", "REPORT_DELETION", {}, True, "Unity Catalog Credential deletion"],
         ["uc_metastore_assignment_delete", "unityCatalog", "deleteMetastoreAssignment", "metastoreAssignment", "request_params.input_workspace_id", "request_params.input_workspace_id", "REPORT_DELETION", {}, True, "Metastore Assignment deletion"],
         ["workspace_fileDelete", "workspace", "fileDelete", "files", "request_params.path", "concat('/Workspace', request_params.path)", "REPORT_DELETION", {}, True, "Workspace file deletion"],
-        ["workspace_groups_deletion", "accounts", "removeGroup", "groups", "request_params.targetUserId", "request_params.targetGroupName", "REPORT_DELETION", {}, True, "Workspace Groups deletion"],
-        ["workspace_user_deletion", "accounts", "delete", "identity_replace", "request_params.targetUserId", "request_params.targetUserName", "REPORT_DELETION", {}, True, "Workspace User deletion"],
     ]
 
 
 def _workspace_admin_filters_raw():
     return [
+        ["workspace_groups_deletion", "accounts", "removeGroup", "groups", "request_params.targetUserId", "request_params.targetGroupName", "REPORT_DELETION", {}, True, "Workspace Groups deletion"],
+        ["workspace_user_deletion", "accounts", "delete", "identity_replace", "request_params.targetUserId", "request_params.targetUserName", "REPORT_DELETION", {}, True, "Workspace User deletion"],
         ["workspace_any_users_workspace_grant_change", "accounts", "changeDatabricksWorkspaceAcl", "identity_replace", "request_params.targetUserId", "request_params.aclChangeResourceName", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace Groups/Users/SP workspace grant change"],
         ["workspace_any_users_dbsql_grant_change", "accounts", "changeDatabricksSqlAcl", "identity_replace", "request_params.targetUserId", "request_params.aclChangeResourceName", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace Groups/Users/SP dbsql grant change"],
         ["workspace_token_grant_change", "accounts", "changeDbTokenAcl", "tokensAcls", "concat_ws('/',workspace_id,'tokens')", "concat_ws('/',workspace_id,'tokens')", "ALERT_ENTITLEMENT_CHANGE", {}, True, "Workspace Tokens Grants change"],

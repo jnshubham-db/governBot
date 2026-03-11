@@ -56,6 +56,21 @@ filters_by_type = load_filters(spark, config.catalog, config.schema)
 | [IMPLEMENTATION.md](IMPLEMENTATION.md) | How to implement or change code: package conventions, notebook format, table contracts, checklist. |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Build, install, env config, secret scope, running notebooks, workflow order, troubleshooting. |
 
+## Deploy app with Databricks Asset Bundles (DABs)
+
+The app under `app/` (React + FastAPI) can be deployed using [Databricks Asset Bundles](https://docs.databricks.com/en/dev-tools/bundles/).
+
+1. **Set workspace host** — Edit `databricks.yml` and set `targets.dev.workspace.host` (and `prod` if needed) to your workspace URL.
+2. **Authenticate** — `databricks auth login --host https://your-workspace.cloud.databricks.com`
+3. **Deploy** (from governBot repo root):
+   ```bash
+   databricks bundle validate
+   databricks bundle deploy -t dev
+   ```
+4. **Run the app** — `databricks bundle run governbot_app -t dev` or start it from the Apps UI.
+
+See `app/README.md` for app config (catalog, schema, warehouse, env vars).
+
 ## References
 
 - [governBot/mx_scripts](../governBot/mx_scripts) and [governBot/DOCUMENTATION.md](../governBot/DOCUMENTATION.md) for original semantics and product details.
