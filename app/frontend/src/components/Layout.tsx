@@ -72,7 +72,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         borderRight: '1px solid #334155',
         overflowY: 'auto',
       }}>
-        <h2 style={{ margin: '0 0 1rem', fontSize: '1.25rem' }}>🛡️ GovernBot</h2>
+        <h2 style={{ margin: '0 0 1rem', fontSize: '1.25rem' }}>🛡️ DB-BouncerBot</h2>
         <nav style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
           <NavItem to="/summary" matchPaths={['/', '/summary']} icon={<IconSummary />} label="Summary" />
           <NavItem to="/actions" matchPaths={['/actions']} icon={<IconActions />} label="Actions Center" />
