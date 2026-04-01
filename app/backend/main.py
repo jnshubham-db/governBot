@@ -1,20 +1,27 @@
 """
 GovernBot FastAPI backend: config, summary, actions, configs (workspaces, identities, filters).
-All routes accept X-Catalog, X-Schema, X-Warehouse-HTTP-Path headers (or use env defaults).
+
+Data routes use the Databricks SQL connector with user authorization (OBO) when
+``X-Forwarded-Access-Token`` or ``Authorization: Bearer`` is present (Databricks Apps
+forwards the user token). Otherwise unified SDK auth is used (e.g. local dev with
+a CLI profile). Set ``GOVERNANCE_REQUIRE_OBO=1`` to reject requests without a user token.
+
+All routes accept X-Catalog, X-Schema, X-Warehouse-HTTP-Path headers (or env defaults).
 """
 import math
 import os
 import sys
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, Generator, Optional
 
 # Add parent app dir for config (so "from config" works when running from app/)
 _APP_DIR = os.path.join(os.path.dirname(__file__), "..")
 if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
 
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -33,6 +40,13 @@ TABLE_FILTERS = db_api.TABLE_FILTERS
 TABLE_PENDING_APPROVALS = db_api.TABLE_PENDING_APPROVALS
 
 
+@dataclass
+class GovernanceSql:
+    conn: Any
+    catalog: str
+    schema: str
+
+
 def _catalog_header(x: Optional[str] = Header(None, alias="X-Catalog")) -> str:
     return (x or "").strip() or get_catalog()
 
@@ -45,13 +59,55 @@ def _http_path_header(x: Optional[str] = Header(None, alias="X-Warehouse-HTTP-Pa
     return (x or "").strip() or get_warehouse_http_path()
 
 
-def _conn(catalog: str, schema: str, http_path: str):
+def get_governance_sql(
+    request: Request,
+    catalog: str = Depends(_catalog_header),
+    schema: str = Depends(_schema_header),
+    http_path: str = Depends(_http_path_header),
+    x_forwarded_access_token: Optional[str] = Header(None, alias="X-Forwarded-Access-Token"),
+    authorization: Optional[str] = Header(None),
+) -> Generator[GovernanceSql, None, None]:
+    """SQL warehouse connection using user token (OBO) when present, else SDK auth (local dev)."""
     if not catalog or not schema or not http_path:
         raise HTTPException(400, "Set X-Catalog, X-Schema, X-Warehouse-HTTP-Path or env vars.")
+    token = (x_forwarded_access_token or "").strip()
+    if not token and authorization:
+        auth = authorization.strip()
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    use_obo = bool(token)
+    require_obo = os.environ.get("GOVERNANCE_REQUIRE_OBO", "").strip().lower() in ("1", "true", "yes")
+    if require_obo and not use_obo:
+        raise HTTPException(
+            401,
+            "User authorization required: X-Forwarded-Access-Token or Authorization Bearer "
+            "(enable user authorization and the sql scope on the Databricks app).",
+        )
+    # If DATABRICKS_HOST is missing, OBO token exchange + SQL API need the workspace host from the proxy.
+    host_override = None
+    if use_obo and not (os.environ.get("DATABRICKS_HOST") or "").strip():
+        host_override = (request.headers.get("x-forwarded-host") or "").strip()
     try:
-        return get_connection(http_path)
+        conn = get_connection(
+            http_path,
+            access_token=token if use_obo else None,
+            host_override=host_override or None,
+            catalog=catalog,
+            schema=schema,
+        )
     except Exception as e:
-        raise HTTPException(502, f"Could not connect to Databricks: {e}")
+        raise HTTPException(
+            502,
+            f"Could not connect to Databricks: {db_api.format_sql_driver_error(e)}",
+        )
+    try:
+        yield GovernanceSql(conn=conn, catalog=catalog, schema=schema)
+    finally:
+        if use_obo:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _esc(s) -> str:
@@ -244,11 +300,11 @@ def api_config():
 @app.get("/api/summary")
 def api_summary(
     hours: int = 24,
-    catalog: str = Depends(_catalog_header),
-    schema: str = Depends(_schema_header),
-    http_path: str = Depends(_http_path_header),
+    gs: GovernanceSql = Depends(get_governance_sql),
 ):
-    conn = _conn(catalog, schema, http_path)
+    conn = gs.conn
+    catalog = gs.catalog
+    schema = gs.schema
     filters = f"{catalog}.{schema}.{TABLE_FILTERS}"
     actions = f"{catalog}.{schema}.{TABLE_CONTROL_ACTIONS}"
     interval_sql = f"current_timestamp() - INTERVAL '{max(1, hours)}' HOUR"
@@ -293,12 +349,12 @@ NUM_TREND_PERIODS = 5
 @app.get("/api/summary/trend")
 def api_summary_trend(
     hours: int = 24,
-    catalog: str = Depends(_catalog_header),
-    schema: str = Depends(_schema_header),
-    http_path: str = Depends(_http_path_header),
+    gs: GovernanceSql = Depends(get_governance_sql),
 ):
     """Time-series for the summary line chart: 5 equal intervals, generated/resolved per period and running pending."""
-    conn = _conn(catalog, schema, http_path)
+    conn = gs.conn
+    catalog = gs.catalog
+    schema = gs.schema
     actions = f"{catalog}.{schema}.{TABLE_CONTROL_ACTIONS}"
     hours_clamped = max(1, hours)
     interval_sql = f"current_timestamp() - INTERVAL '{hours_clamped}' HOUR"
@@ -360,11 +416,11 @@ def api_actions_list(
     workspace: Optional[str] = None,
     violation_type: Optional[str] = None,
     remediation_action: Optional[str] = None,
-    catalog: str = Depends(_catalog_header),
-    schema: str = Depends(_schema_header),
-    http_path: str = Depends(_http_path_header),
+    gs: GovernanceSql = Depends(get_governance_sql),
 ):
-    conn = _conn(catalog, schema, http_path)
+    conn = gs.conn
+    catalog = gs.catalog
+    schema = gs.schema
     filters = f"{catalog}.{schema}.{TABLE_FILTERS}"
     actions = f"{catalog}.{schema}.{TABLE_CONTROL_ACTIONS}"
     sql = f"""
@@ -400,11 +456,11 @@ def api_actions_list(
 def api_actions_approve(
     body: ApproveBody,
     violation_id: str = Header(..., alias="X-Violation-Id"),
-    catalog: str = Depends(_catalog_header),
-    schema: str = Depends(_schema_header),
-    http_path: str = Depends(_http_path_header),
+    gs: GovernanceSql = Depends(get_governance_sql),
 ):
-    conn = _conn(catalog, schema, http_path)
+    conn = gs.conn
+    catalog = gs.catalog
+    schema = gs.schema
     _ensure_pending_approvals(conn, catalog, schema)
     actions = f"{catalog}.{schema}.{TABLE_CONTROL_ACTIONS}"
     execute_statement(
@@ -418,11 +474,11 @@ def api_actions_approve(
 def api_actions_reject(
     body: RejectBody,
     violation_id: str = Header(..., alias="X-Violation-Id"),
-    catalog: str = Depends(_catalog_header),
-    schema: str = Depends(_schema_header),
-    http_path: str = Depends(_http_path_header),
+    gs: GovernanceSql = Depends(get_governance_sql),
 ):
-    conn = _conn(catalog, schema, http_path)
+    conn = gs.conn
+    catalog = gs.catalog
+    schema = gs.schema
     actions = f"{catalog}.{schema}.{TABLE_CONTROL_ACTIONS}"
     # Minimal row from violation - we need to fetch it or accept from body
     execute_statement(
@@ -435,11 +491,11 @@ def api_actions_reject(
 def api_actions_note(
     body: NoteBody,
     violation_id: str = Header(..., alias="X-Violation-Id"),
-    catalog: str = Depends(_catalog_header),
-    schema: str = Depends(_schema_header),
-    http_path: str = Depends(_http_path_header),
+    gs: GovernanceSql = Depends(get_governance_sql),
 ):
-    conn = _conn(catalog, schema, http_path)
+    conn = gs.conn
+    catalog = gs.catalog
+    schema = gs.schema
     actions = f"{catalog}.{schema}.{TABLE_CONTROL_ACTIONS}"
     execute_statement(
         conn,
@@ -449,9 +505,11 @@ def api_actions_note(
 
 
 @app.get("/api/configs/workspaces")
-def api_workspaces_list(catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
+def api_workspaces_list(gs: GovernanceSql = Depends(get_governance_sql)):
     try:
-        conn = _conn(catalog, schema, http_path)
+        conn = gs.conn
+        catalog = gs.catalog
+        schema = gs.schema
         full = f"{catalog}.{schema}.{TABLE_CONFIG_WORKSPACES}"
         df = run_query(conn, f"SELECT * FROM {full}")
         df.columns = [str(c).lower() for c in df.columns]
@@ -463,9 +521,11 @@ def api_workspaces_list(catalog: str = Depends(_catalog_header), schema: str = D
 
 
 @app.post("/api/configs/workspaces")
-def api_workspaces_create(body: WorkspaceBody, catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
+def api_workspaces_create(body: WorkspaceBody, gs: GovernanceSql = Depends(get_governance_sql)):
     try:
-        conn = _conn(catalog, schema, http_path)
+        conn = gs.conn
+        catalog = gs.catalog
+        schema = gs.schema
         full = f"{catalog}.{schema}.{TABLE_CONFIG_WORKSPACES}"
         sql = f"""INSERT INTO {full} (workspace_id, workspace_name, workspace_url, warehouse_id, enforcement_enabled, notification_email, notification_slack_webhook, enabled_object_types, max_retry_attempts, created_at, updated_at, created_by)
     VALUES ({_esc(body.workspace_id)}, {_esc(body.workspace_name)}, {_esc(body.workspace_url)}, {_opt(body.warehouse_id)}, {str(body.enforcement_enabled).upper()}, {_opt(body.notification_email)}, {_opt(body.notification_slack_webhook)}, {_arr_sql(body.enabled_object_types)}, {body.max_retry_attempts}, current_timestamp(), current_timestamp(), {_esc(body.created_by)})"""
@@ -478,9 +538,11 @@ def api_workspaces_create(body: WorkspaceBody, catalog: str = Depends(_catalog_h
 
 
 @app.put("/api/configs/workspaces/{workspace_id}")
-def api_workspaces_update(workspace_id: str, body: WorkspaceBody, catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
+def api_workspaces_update(workspace_id: str, body: WorkspaceBody, gs: GovernanceSql = Depends(get_governance_sql)):
     try:
-        conn = _conn(catalog, schema, http_path)
+        conn = gs.conn
+        catalog = gs.catalog
+        schema = gs.schema
         full = f"{catalog}.{schema}.{TABLE_CONFIG_WORKSPACES}"
         sql = f"""UPDATE {full} SET workspace_name = {_esc(body.workspace_name)}, workspace_url = {_esc(body.workspace_url)}, warehouse_id = {_opt(body.warehouse_id)}, enforcement_enabled = {str(body.enforcement_enabled).upper()}, notification_email = {_opt(body.notification_email)}, notification_slack_webhook = {_opt(body.notification_slack_webhook)}, enabled_object_types = {_arr_sql(body.enabled_object_types)}, max_retry_attempts = {body.max_retry_attempts}, updated_at = current_timestamp(), created_by = {_esc(body.created_by)} WHERE workspace_id = {_esc(workspace_id)}"""
         execute_statement(conn, sql)
@@ -492,9 +554,11 @@ def api_workspaces_update(workspace_id: str, body: WorkspaceBody, catalog: str =
 
 
 @app.delete("/api/configs/workspaces/{workspace_id}")
-def api_workspaces_delete(workspace_id: str, catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
+def api_workspaces_delete(workspace_id: str, gs: GovernanceSql = Depends(get_governance_sql)):
     try:
-        conn = _conn(catalog, schema, http_path)
+        conn = gs.conn
+        catalog = gs.catalog
+        schema = gs.schema
         full = f"{catalog}.{schema}.{TABLE_CONFIG_WORKSPACES}"
         execute_statement(conn, f"DELETE FROM {full} WHERE workspace_id = {_esc(workspace_id)}")
         return {"ok": True}
@@ -505,9 +569,11 @@ def api_workspaces_delete(workspace_id: str, catalog: str = Depends(_catalog_hea
 
 
 @app.get("/api/configs/identities")
-def api_identities_list(catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
+def api_identities_list(gs: GovernanceSql = Depends(get_governance_sql)):
     try:
-        conn = _conn(catalog, schema, http_path)
+        conn = gs.conn
+        catalog = gs.catalog
+        schema = gs.schema
         full = f"{catalog}.{schema}.{TABLE_PREAPPROVED_IDENTITIES}"
         df = run_query(conn, f"SELECT * FROM {full}")
         df.columns = [str(c).lower() for c in df.columns]
@@ -519,9 +585,11 @@ def api_identities_list(catalog: str = Depends(_catalog_header), schema: str = D
 
 
 @app.post("/api/configs/identities")
-def api_identities_create(body: IdentityBody, catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
+def api_identities_create(body: IdentityBody, gs: GovernanceSql = Depends(get_governance_sql)):
     try:
-        conn = _conn(catalog, schema, http_path)
+        conn = gs.conn
+        catalog = gs.catalog
+        schema = gs.schema
         full = f"{catalog}.{schema}.{TABLE_PREAPPROVED_IDENTITIES}"
         sql = f"""INSERT INTO {full} (identity_name, identity_type, display_name, can_manage_resources, can_manage_permissions, approved_actions, is_active, created_at, updated_at)
     VALUES ({_esc(body.identity_name)}, {_esc(body.identity_type)}, {_esc(body.display_name)}, {str(body.can_manage_resources).upper()}, {str(body.can_manage_permissions).upper()}, {_arr_sql(body.approved_actions)}, {str(body.is_active).upper()}, current_timestamp(), current_timestamp())"""
@@ -534,9 +602,11 @@ def api_identities_create(body: IdentityBody, catalog: str = Depends(_catalog_he
 
 
 @app.put("/api/configs/identities/{identity_name}")
-def api_identities_update(identity_name: str, body: IdentityBody, identity_type: str = Header(..., alias="X-Identity-Type"), catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
+def api_identities_update(identity_name: str, body: IdentityBody, identity_type: str = Header(..., alias="X-Identity-Type"), gs: GovernanceSql = Depends(get_governance_sql)):
     try:
-        conn = _conn(catalog, schema, http_path)
+        conn = gs.conn
+        catalog = gs.catalog
+        schema = gs.schema
         full = f"{catalog}.{schema}.{TABLE_PREAPPROVED_IDENTITIES}"
         sql = f"""UPDATE {full} SET display_name = {_esc(body.display_name)}, can_manage_resources = {str(body.can_manage_resources).upper()}, can_manage_permissions = {str(body.can_manage_permissions).upper()}, approved_actions = {_arr_sql(body.approved_actions)}, is_active = {str(body.is_active).upper()}, updated_at = current_timestamp() WHERE identity_name = {_esc(identity_name)} AND identity_type = {_esc(identity_type)}"""
         execute_statement(conn, sql)
@@ -548,9 +618,11 @@ def api_identities_update(identity_name: str, body: IdentityBody, identity_type:
 
 
 @app.delete("/api/configs/identities/{identity_name}")
-def api_identities_delete(identity_name: str, identity_type: str = Header(..., alias="X-Identity-Type"), catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
+def api_identities_delete(identity_name: str, identity_type: str = Header(..., alias="X-Identity-Type"), gs: GovernanceSql = Depends(get_governance_sql)):
     try:
-        conn = _conn(catalog, schema, http_path)
+        conn = gs.conn
+        catalog = gs.catalog
+        schema = gs.schema
         full = f"{catalog}.{schema}.{TABLE_PREAPPROVED_IDENTITIES}"
         execute_statement(conn, f"DELETE FROM {full} WHERE identity_name = {_esc(identity_name)} AND identity_type = {_esc(identity_type)}")
         return {"ok": True}
@@ -561,8 +633,10 @@ def api_identities_delete(identity_name: str, identity_type: str = Header(..., a
 
 
 @app.get("/api/configs/filters")
-def api_filters_list(catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
-    conn = _conn(catalog, schema, http_path)
+def api_filters_list(gs: GovernanceSql = Depends(get_governance_sql)):
+    conn = gs.conn
+    catalog = gs.catalog
+    schema = gs.schema
     full = f"{catalog}.{schema}.{TABLE_FILTERS}"
     df = run_query(conn, f"SELECT * FROM {full}")
     df.columns = [str(c).lower() for c in df.columns]
@@ -570,8 +644,10 @@ def api_filters_list(catalog: str = Depends(_catalog_header), schema: str = Depe
 
 
 @app.post("/api/configs/filters")
-def api_filters_create(body: FilterBody, catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
-    conn = _conn(catalog, schema, http_path)
+def api_filters_create(body: FilterBody, gs: GovernanceSql = Depends(get_governance_sql)):
+    conn = gs.conn
+    catalog = gs.catalog
+    schema = gs.schema
     full = f"{catalog}.{schema}.{TABLE_FILTERS}"
     fid = body.filter_id or str(uuid.uuid4())
     sql = f"""INSERT INTO {full} (filter_id, filter_name, service_name, action_name, object_type, object_id_expr, object_name_expr, extra_columns, violation_type, remediation_action, is_active, description, created_at, updated_at)
@@ -581,8 +657,10 @@ def api_filters_create(body: FilterBody, catalog: str = Depends(_catalog_header)
 
 
 @app.put("/api/configs/filters/{filter_id}")
-def api_filters_update(filter_id: str, body: FilterBody, catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
-    conn = _conn(catalog, schema, http_path)
+def api_filters_update(filter_id: str, body: FilterBody, gs: GovernanceSql = Depends(get_governance_sql)):
+    conn = gs.conn
+    catalog = gs.catalog
+    schema = gs.schema
     full = f"{catalog}.{schema}.{TABLE_FILTERS}"
     sql = f"""UPDATE {full} SET filter_name = {_esc(body.filter_name)}, service_name = {_esc(body.service_name)}, action_name = {_esc(body.action_name)}, object_type = {_esc(body.object_type)}, object_id_expr = {_esc(body.object_id_expr)}, object_name_expr = {_esc(body.object_name_expr)}, violation_type = {_esc(body.violation_type)}, remediation_action = {_esc(body.remediation_action)}, is_active = {str(body.is_active).upper()}, description = {_esc(body.description)}, updated_at = current_timestamp() WHERE filter_id = {_esc(filter_id)}"""
     execute_statement(conn, sql)
@@ -590,8 +668,10 @@ def api_filters_update(filter_id: str, body: FilterBody, catalog: str = Depends(
 
 
 @app.delete("/api/configs/filters/{filter_id}")
-def api_filters_delete(filter_id: str, catalog: str = Depends(_catalog_header), schema: str = Depends(_schema_header), http_path: str = Depends(_http_path_header)):
-    conn = _conn(catalog, schema, http_path)
+def api_filters_delete(filter_id: str, gs: GovernanceSql = Depends(get_governance_sql)):
+    conn = gs.conn
+    catalog = gs.catalog
+    schema = gs.schema
     full = f"{catalog}.{schema}.{TABLE_FILTERS}"
     execute_statement(conn, f"DELETE FROM {full} WHERE filter_id = {_esc(filter_id)}")
     return {"ok": True}

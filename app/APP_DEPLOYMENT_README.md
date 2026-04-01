@@ -40,10 +40,32 @@ From the **repository root**:
 
 ```bash
 databricks bundle validate -t dev
-databricks bundle deploy -t dev
+databricks bundle deploy -t dev -p <your-profile>
 ```
 
 Use `-t prod` for production. The app code under `app/` (including `app.yaml`, `backend/`, and, if present, `frontend/dist/`) is deployed to the workspace.
+
+### If deploy fails: `App with name governbot does not exist or is deleted`
+
+The bundle’s Terraform step must be able to read the app by name. That fails when the app was **never created** in the workspace or was **deleted in the Apps UI** while bundle state still tracked it.
+
+**Fix A — create the app once (most common for a new workspace):**
+
+```bash
+databricks apps create governbot --description "GovernBot" -p <your-profile>
+databricks bundle deploy -t dev -p <your-profile>
+```
+
+**Fix B — app was deleted after a previous deploy (orphaned remote state):**
+
+```bash
+databricks bundle destroy -t dev -p <your-profile>
+databricks bundle deploy -t dev -p <your-profile>
+```
+
+If `destroy` is not an option, recreate the empty app with the same name (Fix A), then deploy again.
+
+**Fix C — name collision:** If `apps create` says the name is taken but deploy still fails, another user may own that app name, or state is inconsistent—pick a new `name` under `resources.apps.governbot_app` in `databricks.yml` and deploy.
 
 ## 4. Run the app and set environment variables
 

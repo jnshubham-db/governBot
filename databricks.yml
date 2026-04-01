@@ -4,6 +4,10 @@
 # Before deploy: build the React frontend so the UI is included (see app/APP_DEPLOYMENT_README.md).
 #   cd app/frontend && npm ci && npm run build
 #
+# If deploy fails with "App with name governbot does not exist or is deleted", create the app once:
+#   databricks apps create governbot --description "GovernBot" -p <profile>
+# Or reset bundle state: databricks bundle destroy -t dev -p <profile> then redeploy (see APP_DEPLOYMENT_README.md).
+#
 # 1. Set workspace host below for your target(s).
 # 2. Auth: databricks auth login --host <your-workspace-url>
 # 3. Deploy: databricks bundle validate && databricks bundle deploy -t dev
@@ -29,6 +33,14 @@ resources:
       name: governbot
       description: "GovernBot — governance violations summary, actions, and configuration"
       source_code_path: app
+      permissions:
+        - user_name: "users"
+          level: "CAN_USE"
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: "8baced1ff014912d"
+            permission: "CAN_USE"
 
 targets:
   dev:

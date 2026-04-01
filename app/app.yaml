@@ -16,3 +16,16 @@ env:
     value: "govern_bot"
   - name: DATABRICKS_APP_WAREHOUSE_HTTP_PATH
     value: "/sql/1.0/warehouses/8baced1ff014912d"
+  - name: GOVERNANCE_REQUIRE_OBO
+    value: "1"
+
+resources:
+  - name: sql-warehouse
+    sql_warehouse:
+      id: "8baced1ff014912d"
+      permission: CAN_USE
+
+user_authorization:
+  scopes:
+    - sql
+    - catalog.tables:read
