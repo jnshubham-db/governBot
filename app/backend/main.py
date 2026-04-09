@@ -15,6 +15,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Generator, Optional
+from datetime import datetime, timedelta
 
 # Add parent app dir for config (so "from config" works when running from app/)
 _APP_DIR = os.path.join(os.path.dirname(__file__), "..")
@@ -38,6 +39,7 @@ TABLE_VIOLATIONS_STAGING = db_api.TABLE_VIOLATIONS_STAGING
 TABLE_CONTROL_ACTIONS = db_api.TABLE_CONTROL_ACTIONS
 TABLE_FILTERS = db_api.TABLE_FILTERS
 TABLE_PENDING_APPROVALS = db_api.TABLE_PENDING_APPROVALS
+NUM_TREND_PERIODS = 5
 
 
 @dataclass
@@ -114,6 +116,16 @@ def _esc(s) -> str:
     if s is None or (isinstance(s, float) and str(s) == "nan"):
         return "NULL"
     return "'" + str(s).replace("'", "''") + "'"
+
+
+def _remediation_type_sql_filter(remediation_type: str, actions_alias: str = "actions") -> str:
+    """SQL AND clause for MANUAL (report/alert) vs AUTOMATED remediation on control actions."""
+    col = f"upper({actions_alias}.action_type)"
+    if remediation_type == "MANUAL":
+        return f"and {col} rlike '(REPORT*|ALERT*)'"
+    if remediation_type == "AUTOMATED":
+        return f"and {col} not rlike '(REPORT*|ALERT*)'"
+    return ""
 
 
 def _opt(s) -> str:
@@ -300,6 +312,7 @@ def api_config():
 @app.get("/api/summary")
 def api_summary(
     hours: int = 24,
+    remediation_type: str = 'ALL',
     gs: GovernanceSql = Depends(get_governance_sql),
 ):
     conn = gs.conn
@@ -307,13 +320,19 @@ def api_summary(
     schema = gs.schema
     filters = f"{catalog}.{schema}.{TABLE_FILTERS}"
     actions = f"{catalog}.{schema}.{TABLE_CONTROL_ACTIONS}"
-    interval_sql = f"current_timestamp() - INTERVAL '{max(1, hours)}' HOUR"
+    interval_sql = f"current_timestamp() - INTERVAL '{hours}' HOUR"
+    remediation_filters = _remediation_type_sql_filter(remediation_type)
     sql = f"""
-        SELECT violation_id, workspace_id, created_at as event_time, violation_type, object_type, violator_email as user_email, object_name, remediation_status as processing_status
+        with multi_actions as (
+        select remediation_action from {filters} group by all having count(*)>1
+        )
+        SELECT violation_id, workspace_id, created_at as event_time, action_type, coalesce(filters_non_multi.violation_type, filters_multi.violation_type) as violation_type, actions.object_type, violator_email as user_email, object_name, remediation_status as processing_status
         FROM {actions} actions
-        inner join (select distinct violation_type, remediation_action from {filters}) filters 
-            on trim(actions.action_type) = trim(filters.remediation_action)
-        WHERE created_at >= {interval_sql}
+        left join (select distinct violation_type, remediation_action from {filters} where remediation_action not in (select remediation_action from multi_actions)) filters_non_multi
+            on trim(actions.action_type) = trim(filters_non_multi.remediation_action)
+        left join (select distinct object_type, violation_type, remediation_action from {filters} where remediation_action in (select remediation_action from multi_actions)) filters_multi
+            on trim(actions.action_type) = trim(filters_multi.remediation_action) and trim(actions.object_type) = trim(filters_multi.object_type)
+        WHERE created_at >= {interval_sql} {remediation_filters}
         ORDER BY created_at DESC
     """
     sql_status = f"""
@@ -321,8 +340,8 @@ def api_summary(
             count(*) as total_violations, 
             count(case when remediation_status not in ('SUCCESS','SKIPPED') then 1 else null end) as pending_violations, 
             total_violations - pending_violations as resolved_violations 
-        from {actions}
-        where created_at >= {interval_sql}"""
+        from {actions} actions
+        where created_at >= {interval_sql} {remediation_filters}"""
     try:
         df = run_query(conn, sql)
         df_status = run_query(conn, sql_status)
@@ -342,13 +361,10 @@ def api_summary(
     latest = _rows_json_safe(latest)
     return SummaryResponse(total=total, pending=pending, completed=completed, by_type=by_type, by_object_type=by_object_type, latest=latest)
 
-
-NUM_TREND_PERIODS = 5
-
-
 @app.get("/api/summary/trend")
 def api_summary_trend(
     hours: int = 24,
+    remediation_type: str = 'ALL',
     gs: GovernanceSql = Depends(get_governance_sql),
 ):
     """Time-series for the summary line chart: 5 equal intervals, generated/resolved per period and running pending."""
@@ -356,30 +372,24 @@ def api_summary_trend(
     catalog = gs.catalog
     schema = gs.schema
     actions = f"{catalog}.{schema}.{TABLE_CONTROL_ACTIONS}"
-    hours_clamped = max(1, hours)
+    hours_clamped = hours
     interval_sql = f"current_timestamp() - INTERVAL '{hours_clamped}' HOUR"
     range_sec = hours_clamped * 3600
     bucket_sec = range_sec / NUM_TREND_PERIODS
     trend: list[dict] = []
 
+    remediation_filters = _remediation_type_sql_filter(remediation_type)
     # Bucket by period index 0..4: floor((unix_ts - start_ts) / bucket_sec), clamped. Use seconds to avoid dialect issues.
     sql_query = f"""
-        select 
-            period_idx, 
-            sum(failed) over (order by period_idx) as failed_cumulative, 
-            sum(generated) over (order by period_idx) as generated_cumulative
-        from (
             SELECT 
                 least({NUM_TREND_PERIODS - 1}, greatest(0, cast(floor(
                     (unix_timestamp(created_at) - (unix_timestamp(current_timestamp()) - {int(range_sec)})) / {bucket_sec}
                 ) as int))) AS period_idx, 
                 count(case when remediation_status NOT IN ('COMPLETED', 'SKIPPED') then 1 else null end) AS failed,
                 count(*) AS generated
-            FROM {actions}
-            WHERE created_at >= {interval_sql}
+            FROM {actions} actions
+            WHERE created_at >= {interval_sql} {remediation_filters}
             GROUP BY 1
-            ORDER BY 1
-        ) as subquery
     """
 
     def run_summary_trend():
@@ -387,19 +397,18 @@ def api_summary_trend(
         df.columns = [str(c).lower() for c in df.columns]
         return {
             int(row["period_idx"]): [
-                                    int(row.get("generated_cumulative", 0)), 
-                                    int(row.get("failed_cumulative", 0))
+                                    int(row.get("generated", 0)), 
+                                    int(row.get("failed", 0))
                                     ] for _, row in df.iterrows()
         }
     try:
         data = run_summary_trend()
         prev_generated = 0
         prev_failed = 0
-        for i in range(NUM_TREND_PERIODS):
-            period = i + 1
-            row = data.get(i, [prev_generated, prev_failed])
+        for period in range(NUM_TREND_PERIODS-1, -1, -1):
+            row = data.get(period, [prev_generated, prev_failed])
             trend.append({
-                "period": str(period),
+                "period": (datetime.now() - timedelta(seconds=period * bucket_sec)).strftime("%Y-%m-%d %H:%M"),
                 "generated": row[0],
                 "failed": row[1],
                 "completed": row[0] - row[1],

@@ -32,14 +32,14 @@ export type SummaryTrendResponse = {
   trend: { period: string; generated: number; failed: number; completed: number }[];
 };
 
-export async function getSummary(hours: number): Promise<SummaryResponse> {
-  const r = await fetch(`${API_BASE}/api/summary?hours=${hours}`, { headers: headers() });
+export async function getSummary(hours: number, remediationType: string): Promise<SummaryResponse> {
+  const r = await fetch(`${API_BASE}/api/summary?hours=${hours}&remediation_type=${remediationType}`, { headers: headers() });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
-export async function getSummaryTrend(hours: number): Promise<SummaryTrendResponse> {
-  const r = await fetch(`${API_BASE}/api/summary/trend?hours=${hours}`, { headers: headers() });
+export async function getSummaryTrend(hours: number, remediationType: string): Promise<SummaryTrendResponse> {
+  const r = await fetch(`${API_BASE}/api/summary/trend?hours=${hours}&remediation_type=${remediationType}`, { headers: headers() });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
